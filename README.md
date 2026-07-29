@@ -1,4 +1,16 @@
-# CTF Arena Factory v0.3
+# CTF Arena Factory v0.4
+
+## Visual CTF Studio
+
+Launch the local designer and open `http://127.0.0.1:8787`:
+
+```powershell
+python -m ctf_factory.cli studio
+```
+
+Set `LLM_API_KEY` (or `OPENAI_API_KEY`) to use ChatGPT as the design brain. Without a key,
+the Studio uses a deterministic offline planner. The AI may select and customize reviewed
+templates, but bundle generation, flags, solvers, and release gates remain local and deterministic.
 
 面向**授权、本地沙箱**的 AI 辅助 CTF 出题 Agent。AI 只负责主题文案，漏洞、密码学弱点、证据构造和 Solver 均来自审核模板，因此生成结果可复现、可测试。
 

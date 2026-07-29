@@ -20,6 +20,8 @@ class ChallengeSpec:
     hints: list[str] = field(default_factory=list)
     delivery: str = "static"
     port: int | None = None
+    variant: str = "default"
+    seed: str | None = None
     flag: str = "flag{local_training_only}"
 
     @classmethod
