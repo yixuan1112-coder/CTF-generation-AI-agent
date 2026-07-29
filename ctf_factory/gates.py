@@ -1,44 +1,60 @@
 from __future__ import annotations
 
 import re
+import subprocess
+import sys
 from pathlib import Path
 
-from .models import ChallengeSpec, GateReport
+from .catalog import TEMPLATES
+from .models import DIFFICULTIES, ChallengeSpec, GateReport
 
 
-ALLOWED = {("web", "path-normalization")}
-FORBIDDEN = re.compile(r"(?:https?://(?!localhost|127\.0\.0\.1)|ssh-rsa|BEGIN .*PRIVATE KEY|AKIA[0-9A-Z]{16})")
+FORBIDDEN = re.compile(r"(?:https?://(?!localhost|127\.0\.0\.1)|BEGIN .*PRIVATE KEY|AKIA[0-9A-Z]{16})")
 
 
 def audit_spec(spec: ChallengeSpec) -> GateReport:
     checks, failures = [], []
-    if (spec.category, spec.vulnerability) in ALLOWED:
+    if (spec.category, spec.challenge_type) in TEMPLATES:
         checks.append("template is allow-listed")
     else:
-        failures.append("category/vulnerability has no reviewed template")
-    text = str(spec.to_dict())
-    if FORBIDDEN.search(text):
+        failures.append("category/type has no reviewed template")
+    if spec.difficulty in DIFFICULTIES:
+        checks.append("difficulty is calibrated")
+    else:
+        failures.append("unsupported difficulty")
+    public_text = str(spec.to_dict(include_flag=False))
+    if FORBIDDEN.search(public_text):
         failures.append("external target or credential-like material detected")
     else:
         checks.append("no external target or credential-like material")
-    if re.fullmatch(r"[a-z0-9-]{3,50}", spec.slug):
+    if re.fullmatch(r"[a-z0-9-]{3,80}", spec.slug):
         checks.append("safe slug")
     else:
         failures.append("slug is unsafe")
-    if len(spec.intended_solution) >= 2:
-        checks.append("solution outline present")
-    else:
-        failures.append("solution outline is incomplete")
     return GateReport(not failures, checks, failures)
 
 
-def audit_bundle(path: Path) -> GateReport:
+def audit_bundle(path: Path, expected_flag: str) -> GateReport:
     checks, failures = [], []
-    required = ["Dockerfile", "docker-compose.yml", "challenge.json", "README.md", "src/app.py", "tests/test_solve.py"]
+    required = ["challenge.json", "README.md", "organizer/spec.json", "organizer/solver.py", "player"]
     for name in required:
-        if (path / name).is_file():
+        if (path / name).exists():
             checks.append(f"present: {name}")
         else:
             failures.append(f"missing: {name}")
+    public_files = [path / "challenge.json", path / "README.md"]
+    if any(expected_flag in p.read_text(encoding="utf-8") for p in public_files):
+        failures.append("flag leaked in public metadata")
+    else:
+        checks.append("flag absent from public metadata")
+    if not failures:
+        result = subprocess.run(
+            [sys.executable, "organizer/solver.py"], cwd=path,
+            capture_output=True, text=True, timeout=15,
+        )
+        if result.returncode == 0 and result.stdout.strip() == expected_flag:
+            checks.append("organizer solver recovered exact flag")
+        else:
+            failures.append(f"solver failed: {result.stderr.strip() or result.stdout.strip()}")
     return GateReport(not failures, checks, failures)
 
