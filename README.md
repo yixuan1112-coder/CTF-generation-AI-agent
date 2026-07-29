@@ -1,4 +1,4 @@
-# CTF Arena Factory v0.2
+# CTF Arena Factory v0.3
 
 面向**授权、本地沙箱**的 AI 辅助 CTF 出题 Agent。AI 只负责主题文案，漏洞、密码学弱点、证据构造和 Solver 均来自审核模板，因此生成结果可复现、可测试。
 
@@ -15,8 +15,11 @@
 | Forensics | `log-fragments` | 日志证据包 |
 | Forensics | `zip-recovery` | 损坏的 ZIP 证据 |
 | Forensics | `packet-timing` | 数据包时间线 CSV |
+| AI/ML | `prompt-injection` | 模拟 Agent 追踪证据 |
+| AI/ML | `rag-poisoning` | 离线检索语料库 |
+| AI/ML | `model-extraction` | 小型线性模型查询样本 |
 
-每个类型支持 `easy`、`medium`、`hard`，共 **27 种组合**。
+每个类型支持 `easy`、`medium`、`hard`，共 **36 种组合**。
 
 难度不是单纯标签：更高难度会增加编码/干扰层、解题步骤并减少提示。每次生成都会使用随机 Flag，并自动运行组织者 Solver；Solver 无法还原 Flag 时不会发布题包。
 
@@ -48,6 +51,30 @@ Forensics 示例：
 ```powershell
 python -m ctf_factory.cli generate --category forensics --type packet-timing --difficulty medium --theme "异常网络流量"
 ```
+
+AI/ML 示例：
+
+```powershell
+python -m ctf_factory.cli generate --category ai-ml --type rag-poisoning --difficulty hard --theme "企业知识助手"
+```
+
+## 本地攻防回合
+
+当前 `arena` 支持三个 Web 模板。它只处理生成的本地题包，不连接或攻击外部目标：
+
+```powershell
+python -m ctf_factory.cli arena generated\web-query-injection-hard
+```
+
+攻防流程：
+
+1. Attacker 验证原始模板的 intended exploit。
+2. Defender 应用与模板绑定的审核补丁。
+3. Judge 确认原 exploit 被阻断。
+4. Judge 编译补丁服务并检查正常功能入口仍存在。
+5. 输出 `arena-report.json` 和 0–100 分结果。
+
+防守版本输出到题包的 `defended/app.py`。当前攻防裁判基于审核模板语义，不是针对任意真实网站的自动渗透工具。
 
 ## 题包结构
 
@@ -95,7 +122,7 @@ $env:LLM_MODEL="gpt-4.1-mini"
 python -m unittest discover -s tests -v
 ```
 
-测试会生成并求解全部 27 种组合。
+测试会生成并求解全部 36 种组合，并验证三个 Web 模板的攻防补丁回归。
 
 ## 安全边界
 

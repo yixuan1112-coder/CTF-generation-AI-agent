@@ -7,6 +7,7 @@ from ctf_factory.catalog import TEMPLATES, make_spec
 from ctf_factory.gates import audit_spec
 from ctf_factory.models import DIFFICULTIES
 from ctf_factory.orchestrator import ChallengeFactory
+from ctf_factory.arena import run_arena
 
 
 class OfflineLLM:
@@ -15,7 +16,7 @@ class OfflineLLM:
 
 
 class FactoryTests(unittest.TestCase):
-    def test_all_27_combinations_generate_and_solve(self):
+    def test_all_36_combinations_generate_and_solve(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for category, challenge_type in TEMPLATES:
@@ -28,6 +29,15 @@ class FactoryTests(unittest.TestCase):
                         self.assertTrue(all(report.passed for report in reports))
                         public = json.loads((bundle / "challenge.json").read_text())
                         self.assertNotIn("flag", public)
+
+    def test_web_attack_defend_arena(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for challenge_type in ("path-normalization", "weak-session", "query-injection"):
+                bundle, _ = ChallengeFactory(OfflineLLM()).generate(category="web", challenge_type=challenge_type, difficulty="easy", theme="arena", output=root)
+                report = run_arena(bundle)
+                self.assertTrue(report["passed"])
+                self.assertEqual(report["score"], 100)
 
     def test_rejects_unknown_template(self):
         with self.assertRaises(ValueError):

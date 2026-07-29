@@ -7,6 +7,7 @@ from pathlib import Path
 from .catalog import list_templates
 from .models import DIFFICULTIES
 from .orchestrator import ChallengeFactory, FactoryError
+from .arena import run_arena
 
 
 def main() -> int:
@@ -14,14 +15,23 @@ def main() -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("list", help="List reviewed challenge templates")
     generate = sub.add_parser("generate", help="Generate one challenge bundle")
-    generate.add_argument("--category", choices=("web", "crypto", "forensics"), required=True)
+    generate.add_argument("--category", choices=("web", "crypto", "forensics", "ai-ml"), required=True)
     generate.add_argument("--type", dest="challenge_type", required=True)
     generate.add_argument("--difficulty", choices=DIFFICULTIES, required=True)
     generate.add_argument("--theme", default="Local cyber range")
     generate.add_argument("--output", type=Path, default=Path("generated"))
+    arena = sub.add_parser("arena", help="Run a local attack/defend/judge round for a Web bundle")
+    arena.add_argument("bundle", type=Path)
     args = parser.parse_args()
     if args.command == "list":
         print(json.dumps([{"category": t.category, "type": t.challenge_type, "delivery": t.delivery} for t in list_templates()], indent=2))
+        return 0
+    if args.command == "arena":
+        try:
+            report = run_arena(args.bundle)
+        except (OSError, ValueError, KeyError) as exc:
+            parser.error(str(exc))
+        print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0
     try:
         bundle, reports = ChallengeFactory().generate(
