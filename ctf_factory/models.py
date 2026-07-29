@@ -4,17 +4,22 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 
+DIFFICULTIES = ("easy", "medium", "hard")
+
+
 @dataclass
 class ChallengeSpec:
     slug: str
     title: str
     category: str
+    challenge_type: str
     difficulty: str
     story: str
     vulnerability: str
     intended_solution: list[str]
     hints: list[str] = field(default_factory=list)
-    port: int = 8000
+    delivery: str = "static"
+    port: int | None = None
     flag: str = "flag{local_training_only}"
 
     @classmethod
@@ -22,8 +27,11 @@ class ChallengeSpec:
         allowed = cls.__dataclass_fields__.keys()
         return cls(**{k: v for k, v in value.items() if k in allowed})
 
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+    def to_dict(self, *, include_flag: bool = True) -> dict[str, Any]:
+        result = asdict(self)
+        if not include_flag:
+            result.pop("flag", None)
+        return result
 
 
 @dataclass
