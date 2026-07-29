@@ -36,7 +36,7 @@ def list_templates() -> list[TemplateInfo]:
     return list(TEMPLATES.values())
 
 
-def make_spec(category: str, challenge_type: str, difficulty: str, theme: str) -> ChallengeSpec:
+def make_spec(category: str, challenge_type: str, difficulty: str, theme: str, variant: str = "default", seed: str | None = None) -> ChallengeSpec:
     if difficulty not in DIFFICULTIES:
         raise ValueError(f"difficulty must be one of: {', '.join(DIFFICULTIES)}")
     try:
@@ -44,7 +44,7 @@ def make_spec(category: str, challenge_type: str, difficulty: str, theme: str) -
     except KeyError as exc:
         raise ValueError(f"unknown template: {category}/{challenge_type}") from exc
     level = DIFFICULTIES.index(difficulty) + 1
-    slug = f"{category}-{challenge_type}-{difficulty}"
+    slug = f"{category}-{challenge_type}-{difficulty}" + (f"-{variant}" if variant != "default" else "")
     story = f"{theme.strip() or 'Local cyber range'}: {template.title}."
     steps = list(template.base_steps)
     if level >= 2:
@@ -63,5 +63,7 @@ def make_spec(category: str, challenge_type: str, difficulty: str, theme: str) -
         hints=list(template.hints[: 4 - level]),
         delivery=template.delivery,
         port=8000 if template.delivery == "web" else None,
+        variant=variant,
+        seed=seed,
     )
 

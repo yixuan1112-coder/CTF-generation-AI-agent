@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CTF Forge Studio</title><link rel="stylesheet" href="/style.css"></head>
+<body><div class="noise"></div><main>
+  <header><div><span class="kicker">AUTHORIZED LAB / DESIGN CONSOLE</span><h1>CTF <i>Forge</i> Studio</h1></div><div id="brain" class="status">连接中</div></header>
+  <section class="hero"><div><p class="eyebrow">把一个想法锻造成可验证的挑战</p><h2>描述世界观，<br><em>让 AI 设计谜题。</em></h2><p>ChatGPT 负责选型、故事和提示；本地审计器掌控漏洞模板、随机 Flag、Solver 与安全边界。</p></div><div class="orb"><span>AI</span><small>DESIGN<br>BRAIN</small></div></section>
+  <section class="workspace">
+    <form id="designer" class="panel form-panel">
+      <div class="panel-head"><b>01 / 任务简报</b><span>DESIGN INPUT</span></div>
+      <label>你想设计什么题？<textarea id="brief" required placeholder="例如：以废弃空间站为背景，一道需要发现被污染知识库的中等难度 AI 安全题……"></textarea></label>
+      <div class="grid"><label>分类<select id="category"><option value="">交给 AI</option></select></label><label>题型<select id="type"><option value="">交给 AI</option></select></label><label>难度<select id="difficulty"><option>easy</option><option selected>medium</option><option>hard</option></select></label></div>
+      <button id="planButton" class="primary" type="submit"><span>生成设计蓝图</span><b>→</b></button>
+    </form>
+    <section class="panel result-panel"><div class="panel-head"><b>02 / AI 蓝图</b><span id="source">WAITING</span></div>
+      <div id="empty" class="empty"><div>⌁</div><p>提交简报后，AI 会在审核过的模板中规划题目。</p></div>
+      <div id="result" hidden><div class="chips"><span id="rCategory"></span><span id="rType"></span><span id="rDifficulty"></span></div><h3 id="rTitle"></h3><p id="rStory" class="story"></p><h4>提示设计</h4><ol id="rHints"></ol><div class="notes"><small>DESIGNER NOTES</small><p id="rNotes"></p></div>
+      <div class="generate"><input id="variant" value="studio" maxlength="32" aria-label="题目版本"><input id="seed" placeholder="可选复现种子" aria-label="复现种子"><button id="generateButton" class="primary">生成并审计题包 <b>↗</b></button></div></div>
+    </section>
+  </section>
+  <section id="receipt" class="receipt" hidden></section>
+  <footer><span>CTF ARENA FACTORY / LOCAL ONLY</span><span>AI plans · validators decide</span></footer>
+</main><script src="/app.js"></script></body></html>

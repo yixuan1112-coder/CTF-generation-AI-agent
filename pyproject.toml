@@ -1,6 +1,6 @@
 [project]
 name = "ctf-arena-factory"
-version = "0.3.0"
+version = "0.4.0"
 description = "AI-assisted, validator-gated CTF challenge factory"
 requires-python = ">=3.11"
 
@@ -9,3 +9,6 @@ ctf-factory = "ctf_factory.cli:main"
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
+
+[tool.setuptools.package-data]
+ctf_factory = ["studio_static/*.html", "studio_static/*.css", "studio_static/*.js"]

@@ -84,9 +84,15 @@ def web_session(spec: ChallengeSpec, out: Path) -> None:
     layers = _layers(spec); token = json.dumps({"role":"admin"}).encode()
     for _ in range(layers):
         token = base64.b64encode(token)
+    page = r'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ORBITAL // Archive Console</title><style>
+*{box-sizing:border-box}body{margin:0;background:#07110f;color:#d8f7e8;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;min-height:100vh;background-image:linear-gradient(rgba(32,255,173,.035) 1px,transparent 1px),linear-gradient(90deg,rgba(32,255,173,.035) 1px,transparent 1px);background-size:32px 32px}.shell{max-width:1120px;margin:auto;padding:28px}.top{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #1e5d49;padding-bottom:18px}.brand{font-weight:900;letter-spacing:.18em;color:#53ffb8}.badge{border:1px solid #2b745c;border-radius:999px;padding:7px 12px;color:#83b8a5;font-size:12px}.hero{display:grid;grid-template-columns:1.4fr .8fr;gap:20px;padding:54px 0 28px}.eyebrow{color:#53ffb8;font-size:12px;letter-spacing:.2em}h1{font-family:Segoe UI,sans-serif;font-size:48px;line-height:1.05;margin:14px 0;color:#f2fff9}.lead{color:#91b9aa;line-height:1.7;max-width:650px}.panel{background:rgba(9,29,24,.88);border:1px solid #245c49;border-radius:14px;padding:22px;box-shadow:0 20px 60px #0007}.status{display:flex;align-items:center;gap:10px}.dot{width:9px;height:9px;border-radius:50%;background:#ffbf4b;box-shadow:0 0 14px #ffbf4b}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}.card{background:#0b1b17;border:1px solid #1c4b3c;border-radius:12px;padding:20px;min-height:170px}.card h3{margin-top:0;color:#bfffe2}.muted{color:#77998d;font-size:13px;line-height:1.6}.locked{color:#ffca68}.terminal{margin-top:18px;background:#020806;border:1px solid #28624f;border-radius:12px;overflow:hidden}.termbar{background:#102a22;padding:10px 14px;color:#7fae9d;font-size:12px}.termbody{padding:18px}.row{display:flex;gap:10px}input{flex:1;background:#07120f;border:1px solid #28624f;color:#d8f7e8;border-radius:8px;padding:12px;font-family:inherit}button{background:#45efaa;color:#03110c;border:0;border-radius:8px;padding:12px 18px;font-weight:800;cursor:pointer}button:hover{background:#75ffc5}pre{white-space:pre-wrap;color:#6ef5b7;min-height:42px}.foot{padding:24px 0;color:#557a6c;font-size:12px}@media(max-width:760px){.hero{grid-template-columns:1fr}.grid{grid-template-columns:1fr}h1{font-size:36px}.shell{padding:18px}}
+</style></head><body><main class="shell"><header class="top"><div class="brand">ORBITAL ARCHIVE // 07</div><div class="badge">LOCAL TRAINING NODE</div></header><section class="hero"><div><div class="eyebrow">ACCESS CONTROL EXERCISE</div><h1>Lost Station<br>Identity Archive</h1><p class="lead">Communications are back online, but the highest-clearance archive remains locked. Analyze how the client session is represented and decide what the server actually trusts.</p></div><aside class="panel"><div class="status"><span class="dot"></span><strong id="identity">IDENTITY: GUEST</strong></div><p class="muted">Node 127.0.0.1:8000<br>Encoding layers: 2<br>Integrity verification: unknown</p><button onclick="check()">Refresh identity</button></aside></section><section class="grid"><article class="card"><h3>01 // OBJECTIVE</h3><p class="muted">Reach the restricted administrator archive and recover a training marker shaped like <code>flag{...}</code>.</p></article><article class="card"><h3>02 // INITIAL CLUE</h3><p class="muted">The system stores role information in a browser session. Encoding changes appearance—but does it prove authenticity?</p></article><article class="card"><h3>03 // RESTRICTED FILE</h3><p class="locked">▣ /admin — ADMIN ONLY</p><p class="muted">Ordinary visitors receive only “guest.” Never target anything outside this local challenge.</p></article></section><section class="terminal"><div class="termbar">SESSION DEBUG TERMINAL</div><div class="termbody"><p class="muted">Enter an encoded role cookie. The console will apply it to this local session and request the restricted archive.</p><div class="row"><input id="token" aria-label="role cookie" placeholder="encoded role cookie"><button onclick="applyToken()">Apply and request</button></div><pre id="output">$ waiting for operator input...</pre></div></section><footer class="foot">ORBITAL CYBER RANGE · AUTHORIZED LOCAL CTF ONLY</footer></main><script>
+async function request(path){const r=await fetch(path);return await r.text()}async function check(){const t=await request('/status');document.getElementById('identity').textContent='IDENTITY: '+t.toUpperCase()}async function applyToken(){const v=document.getElementById('token').value.trim();document.cookie='role='+v+'; path=/';const t=await request('/admin');document.getElementById('output').textContent='$ GET /admin\n'+t;check()}check();
+</script></body></html>'''
     app = f'''from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 import base64,json
 LAYERS={layers}
+PAGE={page!r}
 class H(BaseHTTPRequestHandler):
  def do_GET(self):
   raw=self.headers.get("Cookie", "role=e30=").split("role=",1)[-1].split(";",1)[0].encode()
@@ -94,8 +100,13 @@ class H(BaseHTTPRequestHandler):
    for _ in range(LAYERS): raw=base64.b64decode(raw)
    admin=json.loads(raw).get("role")=="admin"
   except Exception: admin=False
-  body=open("flag.txt","rb").read() if self.path=="/admin" and admin else b"guest"
-  self.send_response(200);self.end_headers();self.wfile.write(body)
+  if self.path=="/": body=PAGE.encode()
+  elif self.path=="/status": body=(b"admin" if admin else b"guest")
+  elif self.path=="/admin" and admin: body=open("flag.txt","rb").read()
+  else: body=b"guest"
+  self.send_response(200)
+  self.send_header("Content-Type","text/html; charset=utf-8" if self.path=="/" else "text/plain; charset=utf-8")
+  self.end_headers();self.wfile.write(body)
 ThreadingHTTPServer(("0.0.0.0",8000),H).serve_forever()
 '''
     solver = f'import base64,json\ndata=json.dumps({{"role":"admin"}}).encode()\nfor _ in range({layers}): data=base64.b64encode(data)\nassert data=={token!r}\nprint(open("player/flag.txt",encoding="utf-8").read().strip())\n'
