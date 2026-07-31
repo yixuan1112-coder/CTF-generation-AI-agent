@@ -1,7 +1,7 @@
 [project]
 name = "ctf-arena-factory"
-version = "0.6.0"
-description = "AI-assisted, validator-gated CTF challenge factory"
+version = "0.7.0"
+description = "Adversarial, memory-assisted, validator-gated CTF challenge factory"
 requires-python = ">=3.11"
 
 [project.scripts]

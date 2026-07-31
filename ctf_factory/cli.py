@@ -6,6 +6,7 @@ from pathlib import Path
 
 from .catalog import CATEGORY_INFO, list_templates, runtime_delivery
 from .models import DIFFICULTIES
+from .memory import ExperienceMemory
 from .orchestrator import ChallengeFactory, FactoryError
 from .arena import run_arena
 from .operations import batch_generate, doctor, export_player_bundle
@@ -17,6 +18,7 @@ def main() -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("list", help="List reviewed challenge templates")
     sub.add_parser("doctor", help="Check Python, Docker, and optional model configuration")
+    sub.add_parser("memory", help="Show sanitized adversarial experience-memory statistics")
     studio = sub.add_parser("studio", help="Launch the local visual challenge designer")
     studio.add_argument("--host", default="127.0.0.1")
     studio.add_argument("--port", type=int, default=8787)
@@ -48,6 +50,11 @@ def main() -> int:
         return 0
     if args.command == "doctor":
         report = doctor(); print(json.dumps(report, indent=2)); return 0 if report["ready"] else 1
+    if args.command == "memory":
+        memory = ExperienceMemory()
+        try: print(json.dumps(memory.stats(), indent=2))
+        finally: memory.close()
+        return 0
     if args.command == "studio":
         serve_studio(host=args.host, port=args.port); return 0
     if args.command == "batch":

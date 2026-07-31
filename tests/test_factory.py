@@ -6,10 +6,12 @@ from pathlib import Path
 from ctf_factory.catalog import CATEGORY_INFO, TEMPLATES, make_spec
 from ctf_factory.gates import audit_spec
 from ctf_factory.models import DIFFICULTIES
+from ctf_factory.evolution import EvolutionEngine
+from ctf_factory.memory import ExperienceMemory
 from ctf_factory.orchestrator import ChallengeFactory
 from ctf_factory.arena import run_arena
 from ctf_factory.operations import batch_generate, export_player_bundle
-from ctf_factory.studio import DockerInstanceManager, create_plan
+from ctf_factory.studio import DockerInstanceManager, create_plan, record_experience
 
 
 class OfflineLLM:
@@ -29,6 +31,65 @@ class FactoryTests(unittest.TestCase):
         plan = create_plan({"brief": "空间站里的 RAG 污染", "difficulty": "hard"}, OfflineDesigner())
         self.assertEqual((plan["category"], plan["challenge_type"]), ("ai-ml", "rag-poisoning"))
         self.assertEqual(plan["difficulty"], "hard")
+        self.assertEqual(plan["evolution"]["agents"], ["Generator", "Solver", "Breaker", "Judge"])
+        self.assertGreaterEqual(plan["evolution"]["candidate_count"], 2)
+
+    def test_experience_memory_redacts_secrets_and_guides_novelty(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "memory.sqlite3"
+            memory = ExperienceMemory(database)
+            plan = {"category": "web", "challenge_type": "weak-session",
+                    "difficulty": "easy", "title": "Session Drift"}
+            memory.remember(
+                plan, score=88, passed=True,
+                lessons=["Never store flag{real-secret}", "Never store sk-project-secret-value"],
+            )
+            self.assertEqual(memory.stats(), {"experiences": 1, "passed": 1, "patterns": 1})
+            self.assertLess(memory.novelty_score(plan), 100)
+            memory.close()
+            raw = database.read_bytes()
+            self.assertNotIn(b"flag{real-secret}", raw)
+            self.assertNotIn(b"sk-project-secret-value", raw)
+
+    def test_adversarial_evolution_rejects_public_flag_leaks(self):
+        memory = ExperienceMemory(":memory:")
+        engine = EvolutionEngine(memory)
+        def candidate(index, lessons):
+            return {
+                "category": "web", "challenge_type": "weak-session",
+                "difficulty": "easy", "title": f"Candidate {index}",
+                "story": "Recover the local training evidence.",
+                "hints": ["Inspect the session."] if index else ["flag{leaked-answer}"],
+            }
+        winner = engine.evolve(candidate, allowed={("web", "weak-session")}, count=2)
+        self.assertEqual(winner["title"], "Candidate 1")
+        self.assertFalse(winner["evolution"]["self_modification"])
+        memory.close()
+
+    def test_successful_bundle_records_evolution_without_secrets(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            memory = ExperienceMemory(root / "memory.sqlite3")
+            class OfflineDesigner:
+                def design_challenge(self, **kwargs): return None
+            plan = create_plan({
+                "brief": "A local identity service",
+                "category": "web",
+                "challenge_type": "weak-session",
+                "difficulty": "easy",
+            }, OfflineDesigner(), memory)
+            bundle, reports = ChallengeFactory(OfflineLLM()).generate(
+                category=plan["category"], challenge_type=plan["challenge_type"],
+                difficulty=plan["difficulty"], theme="identity",
+                output=root / "generated", variant="memory", design=plan)
+            evolution, stats = record_experience(bundle, plan, reports, memory)
+            self.assertTrue(evolution["winner_review"]["passed"])
+            self.assertEqual(stats["experiences"], 1)
+            quality = json.loads((bundle / "quality.json").read_text())
+            self.assertEqual(quality["experience_memory"]["experiences"], 1)
+            live_flag = json.loads((bundle / "organizer/spec.json").read_text())["flag"]
+            memory.close()
+            self.assertNotIn(live_flag.encode(), (root / "memory.sqlite3").read_bytes())
 
     def test_factory_accepts_safe_studio_copy(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -154,6 +215,16 @@ class FactoryTests(unittest.TestCase):
         self.assertLess(len(easy.intended_solution), len(hard.intended_solution))
         self.assertGreater(len(easy.hints), len(hard.hints))
         self.assertTrue(audit_spec(hard).passed)
+
+    def test_web_session_page_reports_the_actual_encoding_layers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for difficulty, layers in (("easy", 1), ("medium", 2), ("hard", 3)):
+                bundle, _ = ChallengeFactory(OfflineLLM()).generate(
+                    category="web", challenge_type="weak-session",
+                    difficulty=difficulty, theme="layer check", output=root)
+                app = (bundle / "player/app.py").read_text(encoding="utf-8")
+                self.assertIn(f"Encoding layers: {layers}", app)
 
 
 if __name__ == "__main__":

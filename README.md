@@ -16,6 +16,46 @@
 - 自动生成 `runtime.json`、`deployment.json` 和去除组织者秘密的选手 ZIP。
 - Docker 实例只绑定 `127.0.0.1` 的动态端口，避免多个题目互相抢占端口。
 
+## 对抗进化 Agent
+
+Studio 规划题目时不再只接受一次模型输出，而是运行一个有界的对抗选择循环：
+
+```text
+Generator 生成 2–5 个候选方案
+    → Solver 检查预期解题路径
+    → Breaker 检查泄漏、外部目标和明显捷径
+    → Judge 评估可解性、安全性、新颖度和清晰度
+    → 选择通过门禁的最高分方案
+    → 成功构建后写入脱敏经验记忆
+```
+
+经验记忆默认保存在 `.ctf-agent/memory.sqlite3`，该目录已被 Git 忽略。记忆只保存题型指纹、评分、通过状态和脱敏经验标签，不保存题面正文、真实 Flag、API Key 或组织者秘密。
+
+查看记忆统计：
+
+```powershell
+python -m ctf_factory.cli memory
+```
+
+记忆会影响后续候选的新颖度评分，并把相同方向的历史失败经验提供给 Generator。Agent 不允许修改自身源代码，也不能修改或绕过固定安全门禁；这是一套可审计的 Generator–Solver–Breaker–Judge 选择机制，而不是无限制自我进化。
+
+默认每次设计评估 3 个候选，硬上限为 5。配置在线模型时，每个候选都会产生一次模型调用，因此候选数量会直接影响 API 成本和等待时间；Offline Brain 不产生 API 费用。
+
+### 如何使用对抗进化 Agent
+
+1. 启动 Docker Desktop（服务题需要）。
+2. 可选执行 `scripts/configure-openai.ps1` 配置在线模型；不配置时使用 Offline Brain。
+3. 运行 `python -m ctf_factory.cli studio --port 8787`。
+4. 打开 `http://127.0.0.1:8787`。
+5. 选择方向、构建原语和难度，填写 Creative Brief。
+6. 点击 **Ask AI to create the blueprint**。前端会显示 `EVOLUTION <score>`，而不是直接采用第一次模型输出。
+7. 检查胜出方案的标题、故事、提示和 Designer Notes。
+8. 点击 **Build, solve, and audit bundle**。只有生成、Solver 和发布门禁全部通过，经验才会写入 Memory。
+9. 服务题点击 **Launch instance**；附件题使用 `exports/` 中的选手 ZIP。
+10. 使用 `python -m ctf_factory.cli memory` 查看累计经验、通过次数和不同题目指纹数量。
+
+前端右上角的 `MEMORY N` 表示已记录的脱敏经验数量。`EVOLUTION` 是当前胜出候选的评审分数，不是题目难度或比赛分值。
+
 ## 支持的方向与运行方式
 
 | 方向 | 题型 | 交付方式 |

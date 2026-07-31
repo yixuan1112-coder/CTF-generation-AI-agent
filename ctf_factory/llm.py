@@ -37,20 +37,28 @@ class CompatibleLLM:
 
     def design_challenge(self, *, brief: str, templates: list[dict[str, str]],
                          category: str = "", challenge_type: str = "",
-                         difficulty: str = "medium") -> dict[str, Any] | None:
+                         difficulty: str = "medium",
+                         experience_lessons: list[str] | None = None,
+                         candidate_index: int = 0) -> dict[str, Any] | None:
         """Create a constrained blueprint; executable security behavior stays template-owned."""
         if not self.api_key:
             return None
         constraints = {
             "brief": brief[:2000], "requested_category": category,
             "requested_type": challenge_type, "requested_difficulty": difficulty,
-            "allowed_templates": templates,
+            "allowed_build_primitives": templates,
+            "sanitized_past_lessons": list(experience_lessons or [])[:8],
+            "candidate_index": candidate_index,
         }
         system = (
             "You are the design brain for an authorized, local-only CTF challenge studio. "
-            "Choose exactly one allowed template. Never propose real targets, credentials, malware, "
+            "Choose exactly one reviewed build primitive, then create a distinct challenge design around it. "
+            "The primitive is a safety boundary, not a complete story or fixed puzzle template. "
+            "Never propose real targets, credentials, malware, "
             "persistence, destructive actions, or an unreviewed vulnerability. Return JSON only with "
-            "category, challenge_type, difficulty, title, story, hints, designer_notes. difficulty must "
+            "Use past lessons only to avoid previously observed failures; never reproduce hidden data. "
+            "Make this candidate meaningfully distinct in narrative, data flow, and player reasoning. "
+            "Return category, challenge_type, difficulty, title, story, hints, designer_notes. difficulty must "
             "be easy, medium, or hard; hints must contain 1-3 short strings. Do not include a flag or solution."
         )
         raw = self._complete([

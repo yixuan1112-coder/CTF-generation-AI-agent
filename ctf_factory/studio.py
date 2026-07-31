@@ -12,7 +12,9 @@ from pathlib import Path
 from typing import Any
 
 from .catalog import CATEGORY_INFO, TEMPLATES, runtime_delivery
+from .evolution import EvolutionEngine
 from .llm import CompatibleLLM
+from .memory import ExperienceMemory
 from .models import DIFFICULTIES
 from .orchestrator import ChallengeFactory
 from .operations import export_player_bundle
@@ -146,21 +148,10 @@ def _offline_plan(brief: str, category: str, challenge_type: str, difficulty: st
             "brain": "offline"}
 
 
-def create_plan(payload: dict[str, Any], llm: CompatibleLLM) -> dict[str, Any]:
-    brief = str(payload.get("brief", ""))[:2000]
-    category = str(payload.get("category", ""))
-    challenge_type = str(payload.get("challenge_type", ""))
-    difficulty = str(payload.get("difficulty", "medium"))
-    try:
-        plan = llm.design_challenge(brief=brief, templates=_templates(), category=category,
-                                    challenge_type=challenge_type, difficulty=difficulty)
-    except (OSError, ValueError, KeyError, json.JSONDecodeError):
-        plan = None
-    if plan is None:
-        return _offline_plan(brief, category, challenge_type, difficulty)
+def _normalize_plan(plan: dict[str, Any], *, difficulty: str) -> dict[str, Any]:
     key = (str(plan.get("category", "")), str(plan.get("challenge_type", "")))
     if key not in TEMPLATES:
-        raise ValueError("AI selected a template outside the reviewed allow-list")
+        raise ValueError("AI selected a primitive outside the reviewed allow-list")
     plan["category"], plan["challenge_type"] = key
     plan["difficulty"] = plan.get("difficulty") if plan.get("difficulty") in DIFFICULTIES else difficulty
     plan["title"] = str(plan.get("title", TEMPLATES[key].title))[:120]
@@ -168,13 +159,89 @@ def create_plan(payload: dict[str, Any], llm: CompatibleLLM) -> dict[str, Any]:
     hints = plan.get("hints", [])
     plan["hints"] = [str(x)[:160] for x in hints[:3]] if isinstance(hints, list) else []
     plan["designer_notes"] = str(plan.get("designer_notes", ""))[:500]
-    plan["brain"] = llm.model
     return plan
+
+
+def create_plan(payload: dict[str, Any], llm: CompatibleLLM,
+                memory: ExperienceMemory | None = None) -> dict[str, Any]:
+    brief = str(payload.get("brief", ""))[:2000]
+    category = str(payload.get("category", ""))
+    challenge_type = str(payload.get("challenge_type", ""))
+    difficulty = str(payload.get("difficulty", "medium"))
+    owned_memory = memory is None
+    memory = memory or ExperienceMemory(":memory:")
+    lessons = memory.lessons_for(category, challenge_type)
+    styles = (
+        ("", "Investigate the primary trust boundary."),
+        (" / Shadow State", "Trace how state changes across the system boundary."),
+        (" / Fault Line", "Correlate conflicting evidence before exploiting the weakness."),
+        (" / Echo Path", "Separate decoy behavior from the vulnerable data flow."),
+        (" / Cold Start", "Reconstruct the system assumptions from minimal evidence."),
+    )
+
+    def candidate_factory(index: int, past_lessons: list[str]) -> dict[str, Any]:
+        try:
+            plan = llm.design_challenge(
+                brief=brief, templates=_templates(), category=category,
+                challenge_type=challenge_type, difficulty=difficulty,
+                experience_lessons=past_lessons, candidate_index=index,
+            )
+        except (OSError, ValueError, KeyError, json.JSONDecodeError, TypeError):
+            plan = None
+        if plan is None:
+            plan = _offline_plan(brief, category, challenge_type, difficulty)
+            suffix, perspective = styles[index % len(styles)]
+            plan["title"] = (str(plan["title"]) + suffix)[:120]
+            plan["story"] = (str(plan["story"]) + " " + perspective)[:600]
+            plan["designer_notes"] = (
+                f"Generator candidate {index + 1}; reviewed against Solver, Breaker, "
+                "Judge, and sanitized experience memory."
+            )
+            plan["brain"] = "offline"
+        else:
+            plan["brain"] = getattr(llm, "model", "configured-model")
+        return _normalize_plan(plan, difficulty=difficulty)
+
+    try:
+        return EvolutionEngine(memory).evolve(
+            candidate_factory,
+            allowed=set(TEMPLATES),
+            count=int(payload.get("evolution_candidates", 3)),
+            experience_lessons=lessons,
+        )
+    finally:
+        if owned_memory:
+            memory.close()
+
+
+def record_experience(bundle: Path, plan: dict[str, Any], reports: list[Any],
+                      memory: ExperienceMemory) -> tuple[dict[str, Any], dict[str, int]]:
+    evolution = plan.get("evolution") if isinstance(plan.get("evolution"), dict) else {}
+    review = evolution.get("winner_review", {}) if isinstance(evolution, dict) else {}
+    candidate_risks = [
+        str(risk)
+        for candidate in evolution.get("candidates", [])
+        if isinstance(candidate, dict)
+        for risk in candidate.get("risks", [])
+    ]
+    lessons = candidate_risks + list(review.get("risks", [])) + list(review.get("evidence", []))
+    memory.remember(
+        plan, score=int(evolution.get("winner_score", 100)),
+        passed=all(report.passed for report in reports), lessons=lessons,
+    )
+    stats = memory.stats()
+    quality_path = bundle / "quality.json"
+    quality = json.loads(quality_path.read_text(encoding="utf-8"))
+    quality["adversarial_evolution"] = evolution
+    quality["experience_memory"] = stats
+    quality_path.write_text(json.dumps(quality, indent=2), encoding="utf-8")
+    return evolution, stats
 
 
 class StudioHandler(BaseHTTPRequestHandler):
     llm = CompatibleLLM()
     output = Path("generated")
+    memory = ExperienceMemory()
 
     def _json(self, status: int, value: Any) -> None:
         data = json.dumps(value, ensure_ascii=False).encode()
@@ -200,7 +267,9 @@ class StudioHandler(BaseHTTPRequestHandler):
         if self.path == "/api/bootstrap":
             self._json(200, {"templates": _templates(), "difficulties": DIFFICULTIES,
                              "categories": [{"id": key, **value} for key, value in CATEGORY_INFO.items()],
-                             "brain": {"configured": self.llm.configured, "model": self.llm.model}}); return
+                             "brain": {"configured": self.llm.configured, "model": self.llm.model},
+                             "memory": self.memory.stats(),
+                             "agents": ["Generator", "Solver", "Breaker", "Judge"]}); return
         name = "index.html" if self.path in ("/", "/index.html") else self.path.lstrip("/")
         if name not in {"index.html", "app.js", "style.css", "knowledge.css", "instance.css"}:
             self.send_error(404); return
@@ -216,7 +285,7 @@ class StudioHandler(BaseHTTPRequestHandler):
         try:
             payload = self._payload()
             if self.path == "/api/plan":
-                self._json(200, create_plan(payload, self.llm)); return
+                self._json(200, create_plan(payload, self.llm, self.memory)); return
             if self.path == "/api/generate":
                 plan = payload.get("plan")
                 if not isinstance(plan, dict): raise ValueError("validated plan required")
@@ -226,20 +295,31 @@ class StudioHandler(BaseHTTPRequestHandler):
                 if difficulty not in DIFFICULTIES: raise ValueError("invalid difficulty")
                 variant = str(payload.get("variant", "studio"))
                 if not re.fullmatch(r"[a-z0-9-]{1,32}", variant): raise ValueError("invalid variant")
-                bundle, reports = ChallengeFactory(self.llm).generate(
-                    category=category, challenge_type=challenge_type, difficulty=difficulty,
-                    theme=str(payload.get("brief", "Studio design")), output=self.output,
-                    variant=variant, seed=str(payload.get("seed")) if payload.get("seed") else None,
-                    design=plan)
+                try:
+                    bundle, reports = ChallengeFactory(self.llm).generate(
+                        category=category, challenge_type=challenge_type, difficulty=difficulty,
+                        theme=str(payload.get("brief", "Studio design")), output=self.output,
+                        variant=variant, seed=str(payload.get("seed")) if payload.get("seed") else None,
+                        design=plan)
+                except Exception as exc:
+                    evolution = plan.get("evolution", {})
+                    self.memory.remember(
+                        plan, score=int(evolution.get("winner_score", 0)),
+                        passed=False, lessons=[f"Build gate failure: {type(exc).__name__}"],
+                    )
+                    raise
                 archive = export_player_bundle(bundle, Path("exports"))
                 public = json.loads((bundle / "challenge.json").read_text(encoding="utf-8"))
                 runtime = json.loads((bundle / "runtime.json").read_text(encoding="utf-8"))
+                evolution, memory_stats = record_experience(bundle, plan, reports, self.memory)
                 self._json(201, {
                     "bundle": str(bundle.resolve()), "archive": str(archive.resolve()),
                     "challenge": public, "category_info": CATEGORY_INFO[category],
                     "gates": [r.__dict__ for r in reports],
                     "launch": runtime.get("client", "Download player bundle"),
                     "runtime": runtime,
+                    "evolution": evolution,
+                    "memory": memory_stats,
                     "instance_id": public["slug"] if runtime.get("kind") == "docker" else None,
                 }); return
             if self.path in {"/api/instance/start", "/api/instance/status", "/api/instance/stop"}:
