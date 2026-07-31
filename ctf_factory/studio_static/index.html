@@ -1,22 +1,114 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>CTF Forge Studio</title><link rel="stylesheet" href="/style.css"></head>
-<body><div class="noise"></div><main>
-  <header><div><span class="kicker">AUTHORIZED LAB / DESIGN CONSOLE</span><h1>CTF <i>Forge</i> Studio</h1></div><div id="brain" class="status">连接中</div></header>
-  <section class="hero"><div><p class="eyebrow">把一个想法锻造成可验证的挑战</p><h2>描述世界观，<br><em>让 AI 设计谜题。</em></h2><p>ChatGPT 负责选型、故事和提示；本地审计器掌控漏洞模板、随机 Flag、Solver 与安全边界。</p></div><div class="orb"><span>AI</span><small>DESIGN<br>BRAIN</small></div></section>
-  <section class="workspace">
-    <form id="designer" class="panel form-panel">
-      <div class="panel-head"><b>01 / 任务简报</b><span>DESIGN INPUT</span></div>
-      <label>你想设计什么题？<textarea id="brief" required placeholder="例如：以废弃空间站为背景，一道需要发现被污染知识库的中等难度 AI 安全题……"></textarea></label>
-      <div class="grid"><label>分类<select id="category"><option value="">交给 AI</option></select></label><label>题型<select id="type"><option value="">交给 AI</option></select></label><label>难度<select id="difficulty"><option>easy</option><option selected>medium</option><option>hard</option></select></label></div>
-      <button id="planButton" class="primary" type="submit"><span>生成设计蓝图</span><b>→</b></button>
-    </form>
-    <section class="panel result-panel"><div class="panel-head"><b>02 / AI 蓝图</b><span id="source">WAITING</span></div>
-      <div id="empty" class="empty"><div>⌁</div><p>提交简报后，AI 会在审核过的模板中规划题目。</p></div>
-      <div id="result" hidden><div class="chips"><span id="rCategory"></span><span id="rType"></span><span id="rDifficulty"></span></div><h3 id="rTitle"></h3><p id="rStory" class="story"></p><h4>提示设计</h4><ol id="rHints"></ol><div class="notes"><small>DESIGNER NOTES</small><p id="rNotes"></p></div>
-      <div class="generate"><input id="variant" value="studio" maxlength="32" aria-label="题目版本"><input id="seed" placeholder="可选复现种子" aria-label="复现种子"><button id="generateButton" class="primary">生成并审计题包 <b>↗</b></button></div></div>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>CTF Forge Studio</title>
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/knowledge.css">
+</head>
+<body>
+  <div class="noise"></div>
+  <main>
+    <header>
+      <div><span class="kicker">AUTHORIZED LAB / CHALLENGE FACTORY</span><h1>CTF <i>Forge</i> Studio</h1></div>
+      <div class="head-actions"><span class="counter"><b id="typeCount">30</b> REVIEWED TYPES</span><div id="brain" class="status">CONNECTING</div></div>
+    </header>
+
+    <section class="hero">
+      <div>
+        <p class="eyebrow">DESIGN · VALIDATE · SHIP</p>
+        <h2>Choose a domain.<br><em>Forge a challenge that works.</em></h2>
+        <p>You choose the domain, challenge type, and difficulty. AI shapes the narrative while the local factory controls artifacts, solvers, flag isolation, and release gates.</p>
+      </div>
+      <div class="seal"><span>10</span><small>CTF<br>DOMAINS</small></div>
     </section>
-  </section>
-  <section id="receipt" class="receipt" hidden></section>
-  <footer><span>CTF ARENA FACTORY / LOCAL ONLY</span><span>AI plans · validators decide</span></footer>
-</main><script src="/app.js"></script></body></html>
+
+    <section class="knowledge">
+      <div class="knowledge-head">
+        <div><p class="eyebrow">LEARNING ARCHITECTURE</p><h2>A complete CTF knowledge system</h2></div>
+        <p>Every specialization rests on the same technical foundation. Use this map to design balanced challenges, build learning paths, and identify the skills each artifact should test.</p>
+      </div>
+      <div class="foundation">
+        <article><span>F.01</span><h3>Operating Systems & CLI</h3><p>Linux, Bash, permissions, filesystems, processes, environment configuration, PowerShell, Registry, services, and Windows API fundamentals.</p></article>
+        <article><span>F.02</span><h3>Computer Networks</h3><p>OSI and TCP/IP, TCP, UDP, HTTP/HTTPS, DNS, ICMP, headers, cookies, sessions, status codes, pipelining, and traffic flows.</p></article>
+        <article><span>F.03</span><h3>Programming & Scripting</h3><p>Python strings, requests, struct, regex and data analysis; C/C++ pointers, memory, structs, compilation and linking; Bash automation.</p></article>
+        <article><span>F.04</span><h3>Binary & Data Literacy</h3><p>Hexadecimal, endianness, encodings, file signatures, archives, debugging, version control, reproducible environments, and evidence handling.</p></article>
+      </div>
+      <div class="track-heading"><span>THE SIX CORE TRACKS</span><small>Open a track to inspect its curriculum</small></div>
+      <div class="tracks">
+        <details open><summary><b>01 / Web Exploitation</b><span>Application · Server · Database</span></summary><div><p><strong>Client security:</strong> reflected, stored and DOM XSS, CSP bypass, CSRF, SSRF, CORS, DOM clobbering, prototype pollution.</p><p><strong>Injection:</strong> SQL injection variants, command injection, SSTI, and XXE.</p><p><strong>Server logic:</strong> uploads, LFI/RFI, deserialization, race conditions, authentication flaws, PHP weak typing, Node.js sandboxing, and code audit.</p></div></details>
+        <details><summary><b>02 / Binary Exploitation</b><span>Memory · Assembly · Kernel</span></summary><div><p><strong>Foundations:</strong> x86/x64 assembly, registers, stack frames, ELF, calling conventions, NX, ASLR, Canary, PIE, and RELRO.</p><p><strong>Stack:</strong> overflow, ret2text, ret2shellcode, ret2libc, ROP, SROP, and format strings.</p><p><strong>Heap & advanced:</strong> ptmalloc, bins, tcache, UAF, double free, overlap, off-by-one, House techniques, kernel exploitation, ARM, MIPS and AArch64.</p></div></details>
+        <details><summary><b>03 / Reverse Engineering</b><span>Static · Dynamic · Multi-platform</span></summary><div><p><strong>Analysis:</strong> disassembly, decompilation, breakpoints, memory inspection, single stepping, IDA, Ghidra, gdb and x64dbg.</p><p><strong>Recovery:</strong> crypto recognition, custom algorithms, mazes, matrices, Z3 constraints, anti-debugging, packers, junk code and control-flow flattening.</p><p><strong>Platforms:</strong> ELF, PE, Mach-O, WASM, Go, Rust and native mobile libraries.</p></div></details>
+        <details><summary><b>04 / Cryptography</b><span>Math · Primitives · Implementation</span></summary><div><p><strong>Classical:</strong> Caesar, Vigenère, rail fence, Bacon and frequency analysis.</p><p><strong>Symmetric:</strong> LFSR, PRNG weaknesses, AES/DES modes, CBC bit flipping and padding oracles.</p><p><strong>Asymmetric & hash:</strong> modular arithmetic, CRT, discrete logs, lattices, RSA factorization, Coppersmith, common modulus, Wiener, ECC, invalid curves, length extension and collisions.</p></div></details>
+        <details><summary><b>05 / Misc & Forensics</b><span>Stego · Evidence · OSINT</span></summary><div><p><strong>Files & stego:</strong> PNG/JPEG/ZIP/PCAP repair, LSB, EXIF, watermarks, spectrograms, DTMF, zero-width text and esoteric languages.</p><p><strong>Forensics:</strong> Wireshark/tshark, Volatility, memory images, disks, deleted-file recovery and filesystem analysis.</p><p><strong>General:</strong> Base32/58/64/85/91, Morse, quoted-printable, archive attacks, metadata research, geolocation and OSINT.</p></div></details>
+        <details><summary><b>06 / Mobile Security</b><span>APK · DEX · JNI</span></summary><div><p><strong>Android:</strong> APK structure, AndroidManifest.xml, classes.dex, native libraries, Activities, Services, BroadcastReceivers and ContentProviders.</p><p><strong>Analysis:</strong> Jadx, JEB, smali, Java-layer reversing, NDK/JNI native analysis and insecure exported components.</p><p><strong>Dynamic:</strong> Frida, Xposed, hook-based validation bypass, certificate pinning analysis and signature-check review in isolated training apps.</p></div></details>
+      </div>
+      <div class="toolchain"><b>CORE TOOLCHAIN</b><span>Burp Suite</span><span>Caido</span><span>SQLmap</span><span>Pwntools</span><span>gdb + pwndbg</span><span>Checksec</span><span>ROPgadget</span><span>IDA</span><span>Ghidra</span><span>Jadx</span><span>SageMath</span><span>CyberChef</span><span>Wireshark</span><span>Volatility</span><span>Binwalk</span><span>ExifTool</span></div>
+    </section>
+
+    <form id="designer">
+      <section class="step">
+        <div class="step-title"><span>01</span><div><b>Choose a challenge domain</b><small>CHOOSE A DOMAIN</small></div></div>
+        <div id="categories" class="category-grid"></div>
+      </section>
+
+      <section class="step two-column">
+        <div>
+          <div class="step-title"><span>02</span><div><b>Select type and difficulty</b><small>TYPE & DIFFICULTY</small></div></div>
+          <div class="control-grid">
+            <label>Challenge type<select id="type" required></select></label>
+            <label>Difficulty<select id="difficulty"><option value="easy">Easy</option><option value="medium" selected>Medium</option><option value="hard">Hard</option></select></label>
+          </div>
+          <div id="typeInfo" class="type-info"></div>
+        </div>
+        <div>
+          <div class="step-title"><span>03</span><div><b>Describe your challenge idea</b><small>CREATIVE BRIEF</small></div></div>
+          <label>Setting, objective, or elements to include<textarea id="brief" required placeholder="Example: A lunar base knowledge system has been poisoned. Players must identify a malicious document disguised as system policy..."></textarea></label>
+        </div>
+      </section>
+
+      <button id="planButton" class="primary wide" type="submit"><span>Ask AI to create the blueprint</span><b>→</b></button>
+    </form>
+
+    <section id="blueprint" class="blueprint" hidden>
+      <div class="blueprint-copy">
+        <div class="section-label">AI BLUEPRINT <span id="source"></span></div>
+        <div class="chips"><span id="rCategory"></span><span id="rType"></span><span id="rDifficulty"></span></div>
+        <h3 id="rTitle"></h3><p id="rStory"></p>
+      </div>
+      <div class="blueprint-side">
+        <h4>Progressive hints</h4><ol id="rHints"></ol>
+        <div class="notes"><small>DESIGNER NOTES</small><p id="rNotes"></p></div>
+        <div class="generate">
+          <input id="variant" maxlength="32" aria-label="Challenge variant">
+          <input id="seed" placeholder="Optional reproducibility seed" aria-label="Reproducibility seed">
+          <button id="generateButton" class="primary">Build, solve, and audit bundle <b>↗</b></button>
+        </div>
+      </div>
+    </section>
+    <section id="receipt" class="receipt" hidden></section>
+    <footer><span>CTF ARENA FACTORY / LOCAL ONLY</span><span>AI PLANS · VALIDATORS DECIDE</span></footer>
+  </main>
+
+  <div id="challengeModal" class="modal" hidden>
+    <article class="challenge-card">
+      <button id="closeModal" class="close" aria-label="Close">×</button>
+      <div class="challenge-scroll">
+        <div class="challenge-topline"><span>PLAYER VIEW / CHALLENGE DETAILS</span><span id="challengeId"></span></div>
+        <h2 id="cTitle"></h2>
+        <div class="challenge-meta"><span id="cCategory"></span><span id="cDifficulty"></span><span id="cType"></span></div>
+        <p id="cStory" class="challenge-story"></p>
+        <section class="instance">
+          <div><small>INSTANCE</small><h4 id="cDelivery"></h4><p id="cLaunch"></p></div>
+          <button id="launchButton">Open in Workspace</button>
+        </section>
+        <section class="hint-section"><div class="hint-title"><span>HINTS</span><small>Reveal progressively without exposing the answer</small></div><div id="cHints"></div></section>
+        <section class="flag-box"><label>FLAG SUBMISSION<input placeholder="flag{...}" disabled></label><button disabled>Submit</button></section>
+      </div>
+      <div class="challenge-footer"><div><span>✓ Solver verified</span><span id="gateCount"></span></div><button id="archiveButton">Export player bundle ↗</button></div>
+    </article>
+  </div>
+  <script src="/app.js"></script>
+</body>
+</html>

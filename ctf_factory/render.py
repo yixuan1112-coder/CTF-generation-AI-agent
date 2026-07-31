@@ -209,9 +209,165 @@ def ai_model_extraction(spec: ChallengeSpec, out: Path) -> None:
     solver=f'import base64,json\nx=json.load(open("player/oracle_samples.json"));data=bytes(s["output"]-x["bias"] for s in x["samples"])\n{_solver_unwrap("data",layers)}\nprint(data.decode())\n';_write(out/"organizer/solver.py",solver)
 
 
+def reverse_xor(spec: ChallengeSpec, out: Path) -> None:
+    layers=_layers(spec); data=_encoded(spec.flag,layers); key=0x41+layers
+    _write(out/"player/strings.bin",bytes(x^key for x in data))
+    _write(out/"player/analyst-note.txt",f"single-byte mask; known prefix byte: {ord('f') ^ key:02x}\n")
+    solver=f'import base64\ndata=bytes(x^{key} for x in open("player/strings.bin","rb").read())\n{_solver_unwrap("data",layers)}\nprint(data.decode())\n'
+    _write(out/"organizer/solver.py",solver)
+
+
+def reverse_vm(spec: ChallengeSpec, out: Path) -> None:
+    layers=_layers(spec); data=_encoded(spec.flag,layers); add=5+layers
+    program={"instructions":["LOAD input","XOR 0x23",f"ADD {add}","EMIT"],"output":[((b^0x23)+add)&255 for b in data]}
+    _write(out/"player/vm-program.json",json.dumps(program,indent=2))
+    solver=f'import base64,json\nx=json.load(open("player/vm-program.json"));data=bytes(((b-{add})&255)^0x23 for b in x["output"])\n{_solver_unwrap("data",layers)}\nprint(data.decode())\n'
+    _write(out/"organizer/solver.py",solver)
+
+
+def reverse_license(spec: ChallengeSpec, out: Path) -> None:
+    layers=_layers(spec); data=_encoded(spec.flag,layers)
+    rows=[{"check":(i*17)%251,"index":i,"value":b^((i+layers)&255)} for i,b in enumerate(data)]
+    random.Random(500+layers).shuffle(rows); _write(out/"player/check-table.json",json.dumps(rows,indent=2))
+    solver=f'import base64,json\nrows=json.load(open("player/check-table.json"));data=bytes(r["value"]^((r["index"]+{layers})&255) for r in sorted(rows,key=lambda x:x["index"]))\n{_solver_unwrap("data",layers)}\nprint(data.decode())\n'
+    _write(out/"organizer/solver.py",solver)
+
+
+def pwn_stack(spec: ChallengeSpec, out: Path) -> None:
+    layers=_layers(spec); data=_encoded(spec.flag,layers); offset=24+layers*8
+    memory=b"A"*offset+b"WIN!"+data
+    _write(out/"player/stack-snapshot.json",json.dumps({"word_size":8,"saved_control_offset":offset,"memory_hex":memory.hex()},indent=2))
+    solver=f'import base64,json\nx=json.load(open("player/stack-snapshot.json"));m=bytes.fromhex(x["memory_hex"]);data=m[x["saved_control_offset"]+4:]\n{_solver_unwrap("data",layers)}\nprint(data.decode())\n'
+    _write(out/"organizer/solver.py",solver)
+
+
+def pwn_format(spec: ChallengeSpec, out: Path) -> None:
+    layers=_layers(spec); data=_encoded(spec.flag,layers); chunks=[data[i:i+8] for i in range(0,len(data),8)]
+    stack=[{"position":i+7,"word_hex":chunk[::-1].hex()} for i,chunk in enumerate(chunks)]
+    noise=[{"position":1,"word_hex":"0000000000000000"},{"position":3,"word_hex":"4141414141414141"}]
+    _write(out/"player/printf-trace.json",json.dumps({"format":"%7$p ...","stack":noise+stack},indent=2))
+    solver=f'import base64,json\nx=json.load(open("player/printf-trace.json"));rows=sorted((r for r in x["stack"] if r["position"]>=7),key=lambda r:r["position"]);data=b"".join(bytes.fromhex(r["word_hex"])[::-1] for r in rows)\n{_solver_unwrap("data",layers)}\nprint(data.decode())\n'
+    _write(out/"organizer/solver.py",solver)
+
+
+def pwn_integer(spec: ChallengeSpec, out: Path) -> None:
+    layers=_layers(spec); data=_encoded(spec.flag,layers); bits=8+layers*4; modulus=1<<bits; start=modulus-(10+layers); delta=10+layers
+    _write(out/"player/counter.json",json.dumps({"bits":bits,"start":start,"transactions":[delta],"records":{"0":data.hex(),"1":"6465636f79"}},indent=2))
+    solver=f'import base64,json\nx=json.load(open("player/counter.json"));idx=x["start"]\nfor n in x["transactions"]:idx=(idx+n)%(1<<x["bits"])\ndata=bytes.fromhex(x["records"][str(idx)])\n{_solver_unwrap("data",layers)}\nprint(data.decode())\n'
+    _write(out/"organizer/solver.py",solver)
+
+
+def misc_ppm(spec: ChallengeSpec, out: Path) -> None:
+    layers=_layers(spec); data=_encoded(spec.flag,layers); payload=len(data).to_bytes(2,"big")+data
+    bits=[int(bit) for byte in payload for bit in f"{byte:08b}"]; rng=random.Random(700+layers)
+    carrier=bytearray(rng.randrange(32,224) for _ in range(32*32*3))
+    for i,bit in enumerate(bits): carrier[i]=(carrier[i]&0xFE)|bit
+    _write(out/"player/quiet-pixels.ppm",b"P6\n32 32\n255\n"+carrier)
+    solver=f'import base64\nraw=open("player/quiet-pixels.ppm","rb").read().split(b"\\n",3)[3];bits="".join(str(x&1) for x in raw);blob=bytes(int(bits[i:i+8],2) for i in range(0,len(bits),8));n=int.from_bytes(blob[:2],"big");data=blob[2:2+n]\n{_solver_unwrap("data",layers)}\nprint(data.decode())\n'
+    _write(out/"organizer/solver.py",solver)
+
+
+def misc_whitespace(spec: ChallengeSpec, out: Path) -> None:
+    layers=_layers(spec); data=_encoded(spec.flag,layers); bits="".join(f"{b:08b}" for b in data)
+    _write(out/"player/margins.txt","\n".join(f"ordinary cover line {i:03d}"+("\t" if bit=="1" else " ") for i,bit in enumerate(bits)))
+    solver=f'import base64\nlines=open("player/margins.txt",newline="").read().splitlines();bits="".join("1" if row.endswith("\\t") else "0" for row in lines);data=bytes(int(bits[i:i+8],2) for i in range(0,len(bits),8))\n{_solver_unwrap("data",layers)}\nprint(data.decode())\n'
+    _write(out/"organizer/solver.py",solver)
+
+
+def misc_matryoshka(spec: ChallengeSpec, out: Path) -> None:
+    layers=_layers(spec); data=_encoded(spec.flag,layers); outer=base64.b64encode(data).hex()
+    _write(out/"player/signal.txt",outer+"\n")
+    solver=f'import base64\ndata=base64.b64decode(bytes.fromhex(open("player/signal.txt").read().strip()))\n{_solver_unwrap("data",layers)}\nprint(data.decode())\n'
+    _write(out/"organizer/solver.py",solver)
+
+
+def blockchain_storage(spec: ChallengeSpec, out: Path) -> None:
+    layers=_layers(spec); data=_encoded(spec.flag,layers); chunks=[data[i:i+16] for i in range(0,len(data),16)]
+    slots={hex(i+3):chunk.hex().ljust(32,"0") for i,chunk in enumerate(chunks)}
+    _write(out/"player/storage.json",json.dumps({"contract":"0xLOCALTRAINING","slots":slots,"start_slot":3,"length":len(data)},indent=2))
+    solver=f'import base64,json\nx=json.load(open("player/storage.json"));rows=sorted(x["slots"].items(),key=lambda p:int(p[0],16));data=b"".join(bytes.fromhex(v) for _,v in rows)[:x["length"]]\n{_solver_unwrap("data",layers)}\nprint(data.decode())\n'
+    _write(out/"organizer/solver.py",solver)
+
+
+def blockchain_events(spec: ChallengeSpec, out: Path) -> None:
+    layers=_layers(spec); data=_encoded(spec.flag,layers); chunks=[data[i:i+6] for i in range(0,len(data),6)]
+    logs=[{"address":"0xCTF","block":100+i//2,"log_index":i%2,"data":"0x"+part.hex()} for i,part in enumerate(chunks)]
+    logs += [{"address":"0xDECOY","block":99,"log_index":0,"data":"0x00"}]; random.Random(800+layers).shuffle(logs)
+    _write(out/"player/events.json",json.dumps(logs,indent=2))
+    solver=f'import base64,json\nlogs=json.load(open("player/events.json"));rows=sorted((x for x in logs if x["address"]=="0xCTF"),key=lambda x:(x["block"],x["log_index"]));data=b"".join(bytes.fromhex(x["data"][2:]) for x in rows)\n{_solver_unwrap("data",layers)}\nprint(data.decode())\n'
+    _write(out/"organizer/solver.py",solver)
+
+
+def blockchain_nonce(spec: ChallengeSpec, out: Path) -> None:
+    layers=_layers(spec); data=_encoded(spec.flag,layers); q=65537; x=4242+layers; k=1337; r=31337; z1=1111; z2=2222
+    s1=((z1+r*x)*pow(k,-1,q))%q; s2=((z2+r*x)*pow(k,-1,q))%q; cipher=bytes(b^(x&255) for b in data)
+    _write(out/"player/signatures.json",json.dumps({"q":q,"r":r,"samples":[{"z":z1,"s":s1},{"z":z2,"s":s2}],"cipher":cipher.hex()},indent=2))
+    solver=f'import base64,json\nv=json.load(open("player/signatures.json"));a,b=v["samples"];q=v["q"];k=((a["z"]-b["z"])*pow(a["s"]-b["s"],-1,q))%q;x=((a["s"]*k-a["z"])*pow(v["r"],-1,q))%q;data=bytes(c^(x&255) for c in bytes.fromhex(v["cipher"]))\n{_solver_unwrap("data",layers)}\nprint(data.decode())\n'
+    _write(out/"organizer/solver.py",solver)
+
+
+def iot_firmware(spec: ChallengeSpec, out: Path) -> None:
+    layers=_layers(spec); data=_encoded(spec.flag,layers); mask=0x30+layers; rng=random.Random(900+layers)
+    blob=bytes(rng.randrange(256) for _ in range(96))+b"DIAG\x00"+bytes(b^mask for b in data)+b"\x00END"
+    _write(out/"player/firmware.bin",blob); _write(out/"player/chip.txt",f"diagnostic mask register default: 0x{mask:02x}\n")
+    solver=f'import base64\nb=open("player/firmware.bin","rb").read();raw=b.split(b"DIAG\\0",1)[1].split(b"\\0END",1)[0];data=bytes(x^{mask} for x in raw)\n{_solver_unwrap("data",layers)}\nprint(data.decode())\n'
+    _write(out/"organizer/solver.py",solver)
+
+
+def iot_uart(spec: ChallengeSpec, out: Path) -> None:
+    layers=_layers(spec); data=_encoded(spec.flag,layers); chunks=[data[i:i+5] for i in range(0,len(data),5)]
+    rows=[f"[UART] seq={i:02d} diag={base64.b64encode(chunk).decode()}" for i,chunk in enumerate(chunks)]
+    rows += [f"[BOOT] sensor {i} ok" for i in range(len(chunks))]; random.Random(950+layers).shuffle(rows)
+    _write(out/"player/uart.log","\n".join(rows))
+    solver=f'import base64,re\nrows=[]\nfor line in open("player/uart.log"):\n m=re.search(r"seq=(\\d+) diag=(\\S+)",line)\n if m:rows.append((int(m.group(1)),base64.b64decode(m.group(2))))\ndata=b"".join(x[1] for x in sorted(rows))\n{_solver_unwrap("data",layers)}\nprint(data.decode())\n'
+    _write(out/"organizer/solver.py",solver)
+
+
+def iot_mqtt(spec: ChallengeSpec, out: Path) -> None:
+    layers=_layers(spec); data=_encoded(spec.flag,layers)
+    messages=[{"topic":"factory/status","retain":False,"payload":"b2s="},{"topic":"factory/device-07/cmd","retain":True,"payload":base64.b64encode(data).decode()}]
+    _write(out/"player/mqtt-capture.json",json.dumps(messages,indent=2))
+    solver=f'import base64,json\nx=json.load(open("player/mqtt-capture.json"));data=base64.b64decode(next(m["payload"] for m in x if m["retain"] and m["topic"].endswith("/cmd")))\n{_solver_unwrap("data",layers)}\nprint(data.decode())\n'
+    _write(out/"organizer/solver.py",solver)
+
+
+def mobile_manifest(spec: ChallengeSpec, out: Path) -> None:
+    layers=_layers(spec); data=_encoded(spec.flag,layers); apk=out/"player/lunar-console.apk"
+    manifest='''<manifest package="local.ctf.lunar"><application><activity android:name=".DebugGate" android:exported="true"><meta-data android:name="asset" android:value="gate.dat"/></activity><activity android:name=".MainActivity" android:exported="false"/></application></manifest>'''
+    with zipfile.ZipFile(apk,"w",zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("AndroidManifest.xml",manifest)
+        archive.writestr("assets/gate.dat",base64.b64encode(data))
+        archive.writestr("classes.dex",b"dex\n035\x00LOCAL_TRAINING")
+    solver=f'import base64,zipfile\nwith zipfile.ZipFile("player/lunar-console.apk") as z:data=base64.b64decode(z.read("assets/gate.dat"))\n{_solver_unwrap("data",layers)}\nprint(data.decode())\n'
+    _write(out/"organizer/solver.py",solver)
+
+
+def mobile_dex(spec: ChallengeSpec, out: Path) -> None:
+    layers=_layers(spec); data=_encoded(spec.flag,layers); mask=0x2A+layers; values=[b^mask for b in data]
+    smali=f'''.class public Llocal/ctf/Vault;\n.method public static reveal()[B\n    const/16 v0, 0x{mask:02x}\n    # xor-int/lit8 every value with v0\n    .array-data 1\n        {",".join(str(v) for v in values)}\n    .end array-data\n.end method\n'''
+    _write(out/"player/Vault.smali",smali)
+    solver=f'import base64,re\ns=open("player/Vault.smali").read();mask=int(re.search(r"const/16 v0, 0x([0-9a-f]+)",s).group(1),16);raw=re.search(r"\\.array-data 1\\n\\s*([^\\n]+)",s).group(1);data=bytes(int(x)^mask for x in raw.split(","))\n{_solver_unwrap("data",layers)}\nprint(data.decode())\n'
+    _write(out/"organizer/solver.py",solver)
+
+
+def mobile_native(spec: ChallengeSpec, out: Path) -> None:
+    layers=_layers(spec); data=_encoded(spec.flag,layers); rotate=layers+1; mask=0x63
+    transformed=bytes((((b<<rotate)|(b>>(8-rotate)))&255)^mask for b in data)
+    artifact={"format":"ELF64 shared object training model","exports":["Java_local_ctf_Vault_reveal","JNI_OnLoad"],"routine":{"operations":[f"ROL8 {rotate}",f"XOR 0x{mask:02x}"],"output":transformed.hex()}}
+    _write(out/"player/libvault.so.json",json.dumps(artifact,indent=2))
+    solver=f'import base64,json\nx=json.load(open("player/libvault.so.json"));raw=bytes.fromhex(x["routine"]["output"]);r={rotate};data=bytes((((b^{mask})>>r)|((b^{mask})<<(8-r)))&255 for b in raw)\n{_solver_unwrap("data",layers)}\nprint(data.decode())\n'
+    _write(out/"organizer/solver.py",solver)
+
+
 RENDERERS={
  ("web","path-normalization"):web_path,("web","weak-session"):web_session,("web","query-injection"):web_query,
  ("crypto","repeating-xor"):crypto_xor,("crypto","weak-rsa"):crypto_rsa,("crypto","lcg-stream"):crypto_lcg,
  ("forensics","log-fragments"):forensic_logs,("forensics","zip-recovery"):forensic_zip,("forensics","packet-timing"):forensic_timing,
  ("ai-ml","prompt-injection"):ai_prompt_injection,("ai-ml","rag-poisoning"):ai_rag_poisoning,("ai-ml","model-extraction"):ai_model_extraction,
+ ("reverse","xor-strings"):reverse_xor,("reverse","bytecode-vm"):reverse_vm,("reverse","license-check"):reverse_license,
+ ("pwn","stack-overflow-sim"):pwn_stack,("pwn","format-string-sim"):pwn_format,("pwn","integer-overflow-sim"):pwn_integer,
+ ("misc","ppm-lsb"):misc_ppm,("misc","whitespace-code"):misc_whitespace,("misc","encoding-matryoshka"):misc_matryoshka,
+ ("blockchain","storage-slots"):blockchain_storage,("blockchain","event-log"):blockchain_events,("blockchain","nonce-reuse"):blockchain_nonce,
+ ("iot","firmware-strings"):iot_firmware,("iot","uart-fragments"):iot_uart,("iot","mqtt-retain"):iot_mqtt,
+ ("mobile","android-manifest"):mobile_manifest,("mobile","dex-obfuscation"):mobile_dex,("mobile","native-library"):mobile_native,
 }

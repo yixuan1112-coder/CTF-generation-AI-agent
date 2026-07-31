@@ -4,7 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
-from .catalog import list_templates
+from .catalog import CATEGORY_INFO, list_templates
 from .models import DIFFICULTIES
 from .orchestrator import ChallengeFactory, FactoryError
 from .arena import run_arena
@@ -21,7 +21,7 @@ def main() -> int:
     studio.add_argument("--host", default="127.0.0.1")
     studio.add_argument("--port", type=int, default=8787)
     generate = sub.add_parser("generate", help="Generate one challenge bundle")
-    generate.add_argument("--category", choices=("web", "crypto", "forensics", "ai-ml"), required=True)
+    generate.add_argument("--category", choices=tuple(CATEGORY_INFO), required=True)
     generate.add_argument("--type", dest="challenge_type", required=True)
     generate.add_argument("--difficulty", choices=DIFFICULTIES, required=True)
     generate.add_argument("--theme", default="Local cyber range")

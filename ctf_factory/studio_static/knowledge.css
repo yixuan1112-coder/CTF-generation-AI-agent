@@ -1,0 +1,148 @@
+.knowledge {
+  padding: 42px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.knowledge-head {
+  display: grid;
+  grid-template-columns: 1.1fr .9fr;
+  gap: 50px;
+  align-items: end;
+  margin-bottom: 25px;
+}
+
+.knowledge-head h2 {
+  font: 700 42px/1.05 Georgia, serif;
+  margin: 8px 0;
+}
+
+.knowledge-head > p {
+  color: var(--muted);
+  line-height: 1.7;
+}
+
+.foundation {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 9px;
+}
+
+.foundation article {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  padding: 18px;
+  min-height: 190px;
+}
+
+.foundation article > span {
+  font: 700 10px ui-monospace, monospace;
+  color: var(--acid);
+}
+
+.foundation h3 {
+  font-size: 15px;
+  margin: 25px 0 10px;
+}
+
+.foundation p,
+.tracks details p {
+  font-size: 12px;
+  line-height: 1.65;
+  color: var(--muted);
+}
+
+.track-heading {
+  display: flex;
+  justify-content: space-between;
+  margin: 34px 0 12px;
+  font: 700 11px ui-monospace, monospace;
+  letter-spacing: .1em;
+}
+
+.tracks {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 9px;
+}
+
+.tracks details {
+  border: 1px solid var(--line);
+  background: #121310;
+}
+
+.tracks summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 17px;
+  display: flex;
+  justify-content: space-between;
+  gap: 15px;
+}
+
+.tracks summary::-webkit-details-marker {
+  display: none;
+}
+
+.tracks summary b {
+  font-size: 13px;
+}
+
+.tracks summary span {
+  font: 700 9px ui-monospace, monospace;
+  color: var(--muted);
+  letter-spacing: .08em;
+}
+
+.tracks details[open] {
+  border-color: #5b6329;
+}
+
+.tracks details[open] summary {
+  color: var(--acid);
+  border-bottom: 1px solid var(--line);
+}
+
+.tracks details > div {
+  padding: 8px 17px 13px;
+}
+
+.tracks details strong {
+  color: #ddd;
+}
+
+.toolchain {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 18px;
+  align-items: center;
+}
+
+.toolchain b {
+  font: 700 10px ui-monospace, monospace;
+  color: var(--orange);
+  margin-right: 7px;
+}
+
+.toolchain span {
+  border: 1px solid var(--line);
+  padding: 6px 9px;
+  font: 700 9px ui-monospace, monospace;
+  color: #a9aaa3;
+}
+
+@media (max-width: 850px) {
+  .foundation,
+  .knowledge-head,
+  .tracks {
+    grid-template-columns: 1fr;
+  }
+
+  .knowledge-head h2 {
+    font-size: 34px;
+  }
+
+  .foundation article {
+    min-height: auto;
+  }
+}

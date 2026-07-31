@@ -54,7 +54,7 @@ class ChallengeFactory:
             if not second.passed:
                 raise FactoryError("bundle rejected: " + "; ".join(second.failures))
             quality = {
-                "version": "0.4",
+                "version": "0.6",
                 "score": 100,
                 "dimensions": {"solvability": 40, "safety": 30, "difficulty_calibration": 15, "bundle_completeness": 15},
                 "passed": True,
