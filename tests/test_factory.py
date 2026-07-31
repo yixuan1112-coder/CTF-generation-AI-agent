@@ -32,7 +32,9 @@ class FactoryTests(unittest.TestCase):
         self.assertEqual((plan["category"], plan["challenge_type"]), ("ai-ml", "rag-poisoning"))
         self.assertEqual(plan["difficulty"], "hard")
         self.assertEqual(plan["evolution"]["agents"], ["Generator", "Solver", "Breaker", "Judge"])
-        self.assertGreaterEqual(plan["evolution"]["candidate_count"], 2)
+        self.assertGreaterEqual(plan["evolution"]["candidate_count"], 4)
+        self.assertEqual(plan["evolution"]["score_basis"].split(",")[0], "built bundles")
+        self.assertGreaterEqual(plan["evolution"]["winner_generation"], 0)
 
     def test_experience_memory_redacts_secrets_and_guides_novelty(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -61,9 +63,24 @@ class FactoryTests(unittest.TestCase):
                 "story": "Recover the local training evidence.",
                 "hints": ["Inspect the session."] if index else ["flag{leaked-answer}"],
             }
-        winner = engine.evolve(candidate, allowed={("web", "weak-session")}, count=2)
+        def executed(plan, index, generation):
+            return {
+                "score": 100, "passed": True,
+                "dimensions": {
+                    "execution": 100, "adversarial_resistance": 100,
+                    "determinism": 100, "runtime_integrity": 100,
+                },
+                "evidence": ["test executable probe passed"], "risks": [],
+                "metrics": {"generation": generation},
+            }
+        winner = engine.evolve(
+            candidate, allowed={("web", "weak-session")}, count=2,
+            executable_evaluator=executed,
+        )
         self.assertEqual(winner["title"], "Candidate 1")
         self.assertFalse(winner["evolution"]["self_modification"])
+        self.assertEqual(winner["evolution"]["executed_candidates"], 4)
+        self.assertEqual(memory.stats()["experiences"], 4)
         memory.close()
 
     def test_successful_bundle_records_evolution_without_secrets(self):
@@ -84,12 +101,36 @@ class FactoryTests(unittest.TestCase):
                 output=root / "generated", variant="memory", design=plan)
             evolution, stats = record_experience(bundle, plan, reports, memory)
             self.assertTrue(evolution["winner_review"]["passed"])
-            self.assertEqual(stats["experiences"], 1)
+            self.assertGreaterEqual(stats["experiences"], 7)
             quality = json.loads((bundle / "quality.json").read_text())
-            self.assertEqual(quality["experience_memory"]["experiences"], 1)
+            self.assertEqual(quality["experience_memory"]["experiences"], stats["experiences"])
             live_flag = json.loads((bundle / "organizer/spec.json").read_text())["flag"]
             memory.close()
             self.assertNotIn(live_flag.encode(), (root / "memory.sqlite3").read_bytes())
+
+    def test_second_evolution_retrieves_history_and_changes_mechanics(self):
+        with tempfile.TemporaryDirectory() as directory:
+            memory = ExperienceMemory(Path(directory) / "memory.sqlite3")
+
+            class OfflineDesigner:
+                def design_challenge(self, **kwargs): return None
+
+            payload = {
+                "brief": "A local telemetry investigation",
+                "category": "forensics",
+                "challenge_type": "log-fragments",
+                "difficulty": "medium",
+                "evolution_candidates": 2,
+                "evolution_generations": 2,
+            }
+            first = create_plan(payload, OfflineDesigner(), memory)
+            second = create_plan(payload, OfflineDesigner(), memory)
+            self.assertEqual(first["evolution"]["historical_retrieval"]["episodes"], 0)
+            self.assertGreater(second["evolution"]["historical_retrieval"]["episodes"], 0)
+            self.assertGreaterEqual(second["mechanics"]["decoy_density"], 1)
+            retrieved = memory.retrieve("forensics", "log-fragments", "medium")
+            self.assertTrue(any(item["metrics"].get("solver_seconds") is not None for item in retrieved))
+            memory.close()
 
     def test_factory_accepts_safe_studio_copy(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -167,9 +208,10 @@ class FactoryTests(unittest.TestCase):
             archive = export_player_bundle(bundle, root / "exports")
             import zipfile
             with zipfile.ZipFile(archive) as zipped:
-                joined = b"\n".join(zipped.read(name) for name in zipped.namelist())
+                names = zipped.namelist()
+                joined = b"\n".join(zipped.read(name) for name in names)
             self.assertNotIn(live_flag.encode(), joined)
-            self.assertIn(b"flag{replace_at_deployment}", joined)
+            self.assertNotIn("player/flag.txt", names)
 
     def test_runtime_contracts_cover_service_and_attachment_deliveries(self):
         cases = {
@@ -178,8 +220,8 @@ class FactoryTests(unittest.TestCase):
             ("ai-ml", "prompt-injection"): ("docker", "http"),
             ("blockchain", "storage-slots"): ("docker", "json-rpc"),
             ("iot", "mqtt-retain"): ("docker", "mqtt"),
-            ("mobile", "android-manifest"): ("android", "adb"),
-            ("reverse", "xor-strings"): ("attachment", "download"),
+            ("mobile", "android-manifest"): ("docker", "adb"),
+            ("reverse", "xor-strings"): ("docker", "download"),
         }
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -190,6 +232,67 @@ class FactoryTests(unittest.TestCase):
                         theme="runtime contract", output=root)
                     runtime = json.loads((bundle / "runtime.json").read_text())
                     self.assertEqual((runtime["kind"], runtime["protocol"]), expected)
+                    if category not in {"web", "ai-ml"}:
+                        self.assertTrue((bundle / "player/portal.html").is_file())
+
+    def test_ai_runtime_and_studio_open_the_real_challenge_endpoint(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bundle, _ = ChallengeFactory(OfflineLLM()).generate(
+                category="ai-ml", challenge_type="prompt-injection", difficulty="medium",
+                theme="launch contract", output=root)
+            service_source = (bundle / "player/service.py").read_text(encoding="utf-8")
+            challenge_page = (bundle / "player/challenge.html").read_text(encoding="utf-8")
+            self.assertIn('self.path in ("/","/challenge")', service_source)
+            self.assertIn('self.path=="/api/chat"', service_source)
+            self.assertIn('self.path=="/api/submit"', service_source)
+            self.assertIn("MODEL OPERATIONS", challenge_page)
+            self.assertNotIn("protected_value=", challenge_page)
+
+            manager = DockerInstanceManager(root)
+
+            def fake_run(_bundle, *args, **_kwargs):
+                class Result:
+                    stdout = "challenge\n" if args[0] == "ps" else "0.0.0.0:33960\n"
+                return Result()
+
+            manager._run = fake_run
+            state = manager.status(bundle.name)
+            self.assertEqual(state["url"], "http://127.0.0.1:33960")
+            self.assertEqual(state["launch_url"], "http://127.0.0.1:33960/")
+
+    def test_native_runtime_keeps_protocol_port_and_adds_browser_workspace(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bundle, _ = ChallengeFactory(OfflineLLM()).generate(
+                category="pwn", challenge_type="stack-overflow-sim", difficulty="easy",
+                theme="dual runtime", output=root)
+            manager = DockerInstanceManager(root)
+
+            def fake_run(_bundle, *args, **_kwargs):
+                class Result:
+                    stdout = ""
+                result = Result()
+                if args[0] == "ps":
+                    result.stdout = "challenge\n"
+                elif args[-1] == "31337":
+                    result.stdout = "0.0.0.0:31338\n"
+                else:
+                    result.stdout = "0.0.0.0:18000\n"
+                return result
+
+            manager._run = fake_run
+            state = manager.status(bundle.name)
+            self.assertEqual(state["command"], "nc 127.0.0.1 31338")
+            self.assertEqual(state["launch_url"], "http://127.0.0.1:18000")
+
+    def test_studio_contains_visible_adversarial_evaluation(self):
+        static = Path(__file__).parents[1] / "ctf_factory" / "studio_static"
+        page = (static / "index.html").read_text(encoding="utf-8")
+        script = (static / "app.js").read_text(encoding="utf-8")
+        self.assertIn('id="cEvalScore"', page)
+        self.assertIn('id="cEvalDimensions"', page)
+        self.assertIn("state.launch_url||state.url", script)
 
     def test_pwn_service_export_does_not_disclose_live_flag(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -201,9 +304,27 @@ class FactoryTests(unittest.TestCase):
             archive = export_player_bundle(bundle, root / "exports")
             import zipfile
             with zipfile.ZipFile(archive) as zipped:
-                joined = b"\n".join(zipped.read(name) for name in zipped.namelist())
+                names = zipped.namelist()
+                joined = b"\n".join(zipped.read(name) for name in names)
             self.assertNotIn(live_flag.encode(), joined)
-            self.assertIn(b"flag{replace_at_deployment}", joined)
+            self.assertNotIn("player/flag.txt", names)
+
+    def test_static_portal_export_keeps_evidence_but_omits_plaintext_flag(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bundle, _ = ChallengeFactory(OfflineLLM()).generate(
+                category="crypto", challenge_type="repeating-xor", difficulty="medium",
+                theme="portal export", output=root / "generated")
+            live_flag = json.loads((bundle / "organizer/spec.json").read_text())["flag"]
+            archive = export_player_bundle(bundle, root / "exports")
+            import zipfile
+            with zipfile.ZipFile(archive) as zipped:
+                names = zipped.namelist()
+                joined = b"\n".join(zipped.read(name) for name in names)
+            self.assertIn("player/cipher.hex", names)
+            self.assertIn("player/portal.html", names)
+            self.assertNotIn("player/flag.txt", names)
+            self.assertNotIn(live_flag.encode(), joined)
 
     def test_rejects_unknown_template(self):
         with self.assertRaises(ValueError):

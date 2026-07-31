@@ -32,6 +32,14 @@ class ChallengeFactory:
                 spec.story = str(design["story"])[:600]
             if isinstance(design.get("hints"), list):
                 spec.hints = [str(item)[:160] for item in design["hints"][:3]]
+            mechanics = design.get("mechanics")
+            if isinstance(mechanics, dict):
+                spec.mechanics = {
+                    "encoding_delta": max(0, min(1, int(mechanics.get("encoding_delta", 0)))),
+                    "decoy_density": max(0, min(3, int(mechanics.get("decoy_density", 0)))),
+                    "reasoning_depth": max(1, min(5, int(mechanics.get("reasoning_depth", 1)))),
+                    "mutation_tag": str(mechanics.get("mutation_tag", ""))[:40],
+                }
         else:
             try:
                 story = self.llm.rewrite_story(theme=theme, title=spec.title, category=category, difficulty=difficulty)
@@ -54,7 +62,7 @@ class ChallengeFactory:
             if not second.passed:
                 raise FactoryError("bundle rejected: " + "; ".join(second.failures))
             quality = {
-                "version": "0.7",
+                "version": "0.8",
                 "score": 100,
                 "dimensions": {"solvability": 40, "safety": 30, "difficulty_calibration": 15, "bundle_completeness": 15},
                 "passed": True,

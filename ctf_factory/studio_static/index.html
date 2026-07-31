@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="/style.css">
   <link rel="stylesheet" href="/knowledge.css">
   <link rel="stylesheet" href="/instance.css">
+  <link rel="stylesheet" href="/evaluation.css">
 </head>
 <body>
   <div class="noise"></div>
@@ -100,6 +101,15 @@
         <h2 id="cTitle"></h2>
         <div class="challenge-meta"><span id="cCategory"></span><span id="cDifficulty"></span><span id="cType"></span></div>
         <p id="cStory" class="challenge-story"></p>
+        <section class="evaluation">
+          <div class="evaluation-heading">
+            <div><small>ADVERSARIAL EVALUATION</small><h3><span id="cEvalScore">0</span><b>/100</b></h3></div>
+            <span id="cEvalStatus" class="evaluation-status">PENDING</span>
+          </div>
+          <div id="cEvalDimensions" class="evaluation-dimensions"></div>
+          <div><small>CANDIDATE SCORES</small><div id="cEvalCandidates" class="candidate-scores"></div></div>
+          <p id="cEvalBasis" class="evaluation-basis"></p>
+        </section>
         <section class="instance">
           <div><small>INSTANCE</small><h4 id="cDelivery"></h4><p id="cLaunch"></p></div>
           <div class="instance-actions">

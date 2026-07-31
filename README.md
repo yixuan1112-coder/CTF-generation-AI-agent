@@ -18,18 +18,21 @@
 
 ## 对抗进化 Agent
 
-Studio 规划题目时不再只接受一次模型输出，而是运行一个有界的对抗选择循环：
+Studio 规划题目时会运行两代有界进化循环。评分不再由字段完整性直接推算，而来自临时题包的真实构建和执行结果：
 
 ```text
-Generator 生成 2–5 个候选方案
-    → Solver 检查预期解题路径
-    → Breaker 检查泄漏、外部目标和明显捷径
-    → Judge 评估可解性、安全性、新颖度和清晰度
-    → 选择通过门禁的最高分方案
-    → 成功构建后写入脱敏经验记忆
+Generator 生成第一代候选
+    → 为每个候选构建完整临时题包
+    → Solver 连续执行两次并恢复真实 Flag
+    → Breaker 检查导出泄漏、通用捷径和运行时完整性
+    → 从 SQLite 检索同题型历史 mechanics、指标和失败经验
+    → Mutator 根据风险修改编码深度、干扰密度和推理阶段
+    → 构建并执行第二代候选
+    → Judge 根据执行证据、对抗强度、确定性、新颖度和变异收益选择胜者
+    → 所有候选作为脱敏 episode 写入长期记忆
 ```
 
-经验记忆默认保存在 `.ctf-agent/memory.sqlite3`，该目录已被 Git 忽略。记忆只保存题型指纹、评分、通过状态和脱敏经验标签，不保存题面正文、真实 Flag、API Key 或组织者秘密。
+经验记忆默认保存在 `.ctf-agent/memory.sqlite3`，该目录已被 Git 忽略。每条 episode 保存题型指纹、lineage、mechanics、执行时间、捷径深度、评分、通过状态和脱敏经验标签；不保存真实 Flag、API Key 或组织者秘密。
 
 查看记忆统计：
 
@@ -37,9 +40,9 @@ Generator 生成 2–5 个候选方案
 python -m ctf_factory.cli memory
 ```
 
-记忆会影响后续候选的新颖度评分，并把相同方向的历史失败经验提供给 Generator。Agent 不允许修改自身源代码，也不能修改或绕过固定安全门禁；这是一套可审计的 Generator–Solver–Breaker–Judge 选择机制，而不是无限制自我进化。
+历史检索同时影响新颖度与下一代变异参数：重复的题面/机制会被降分，历史中已经使用过的干扰密度和失败模式会推动 Mutator 选择不同结构。Agent 不允许修改自身源代码，也不能修改或绕过固定安全门禁。
 
-默认每次设计评估 3 个候选，硬上限为 5。配置在线模型时，每个候选都会产生一次模型调用，因此候选数量会直接影响 API 成本和等待时间；Offline Brain 不产生 API 费用。
+默认第一代生成 3 个候选，随后从较优父代产生 3 个变异候选，共实际构建和执行 6 个题包。在线模型只参与第一代设计，第二代在本地根据执行反馈变异，因此默认每次设计产生 3 次模型调用；Offline Brain 不产生 API 费用。
 
 ### 如何使用对抗进化 Agent
 
@@ -48,13 +51,13 @@ python -m ctf_factory.cli memory
 3. 运行 `python -m ctf_factory.cli studio --port 8787`。
 4. 打开 `http://127.0.0.1:8787`。
 5. 选择方向、构建原语和难度，填写 Creative Brief。
-6. 点击 **Ask AI to create the blueprint**。前端会显示 `EVOLUTION <score>`，而不是直接采用第一次模型输出。
+6. 点击 **Ask AI to create the blueprint**。等待候选题实际构建、Solver 重复执行、Breaker 探测和第二代变异完成。
 7. 检查胜出方案的标题、故事、提示和 Designer Notes。
-8. 点击 **Build, solve, and audit bundle**。只有生成、Solver 和发布门禁全部通过，经验才会写入 Memory。
+8. 点击 **Build, solve, and audit bundle**，生成胜出方案的正式题包并再次执行发布门禁。
 9. 服务题点击 **Launch instance**；附件题使用 `exports/` 中的选手 ZIP。
 10. 使用 `python -m ctf_factory.cli memory` 查看累计经验、通过次数和不同题目指纹数量。
 
-前端右上角的 `MEMORY N` 表示已记录的脱敏经验数量。`EVOLUTION` 是当前胜出候选的评审分数，不是题目难度或比赛分值。
+前端右上角的 `MEMORY N` 表示已记录的脱敏 episode 数量。Evaluation 面板会显示实际执行、对抗抵抗、确定性、运行时完整性、新颖度、清晰度和变异收益；它不是题目难度或比赛分值。
 
 ## 支持的方向与运行方式
 
@@ -183,7 +186,7 @@ python -m ctf_factory.cli studio --port 8787
 
 ### 前端一键启动
 
-对 Web、Pwn、AI、Blockchain 和 IoT 题，点击：
+所有 30 种题型都可以点击：
 
 ```text
 Launch instance
@@ -191,12 +194,15 @@ Launch instance
 
 后端只允许启动 `generated/` 下由平台生成、具有有效 `runtime.json` 的题目，不接受浏览器传入的任意路径或 Shell 命令。
 
-启动后：
+启动后会自动打开对应的选手工作台：
 
-- Web/AI：显示并打开 HTTP 地址。
-- Pwn：显示 `nc 127.0.0.1 <动态端口>`。
-- Blockchain：显示 JSON-RPC 地址。
-- IoT：显示 `mosquitto_sub` 命令。
+- Web：漏洞应用和请求构造器。
+- AI：聊天界面、模型攻击目标和 Flag 提交。
+- Pwn：证据预览和网页终端，同时保留 `nc 127.0.0.1 <动态端口>`。
+- Blockchain：合约证据和 RPC 控制台，同时保留 JSON-RPC 接口。
+- IoT：设备证据和消息控制台，同时保留 `mosquitto_sub` 接口。
+- Reverse、Crypto、Forensics、Misc：附件下载、文本或 Hex 预览和 Flag 提交。
+- Mobile：APK/Smali/JNI 证据工作台；仍可配合 Android Emulator、Jadx、apktool 或 Ghidra。
 - 点击 **Stop instance** 停止并清理该题容器。
 
 ### 手动启动
@@ -221,11 +227,11 @@ docker compose logs -f
 docker compose down
 ```
 
-## 六、附件题怎么使用
+## 六、附件与 Mobile 题怎么使用
 
-Reverse、Crypto、Forensics 和 Misc 通常不需要常驻服务。生成后使用 `player/` 中的附件完成分析。
+Reverse、Crypto、Forensics、Misc 和 Mobile 现在同样提供浏览器工作台。工作台不会替代真实附件：选手可以在线预览、下载原始文件，再使用对应专业工具分析。
 
-Mobile 会生成 APK/Smali/JNI 等逆向材料。若本机已经安装 Android SDK 并创建 AVD，可使用题包中的辅助脚本：
+Mobile 会生成 APK/Smali/JNI 等逆向材料。若本机已经安装 Android SDK 并创建 AVD，仍可使用题包中的辅助脚本：
 
 ```powershell
 powershell -File .\launch-android.ps1 -Avd <AVD名称>
@@ -242,9 +248,9 @@ generated/<challenge-slug>/
 ├── quality.json           # 质量门禁结果
 ├── runtime.json           # 本机实例运行协议
 ├── deployment.json        # 上线交付描述
-├── Dockerfile             # 服务题
-├── docker-compose.yml     # 服务题
-├── player/                # 选手材料或服务代码
+├── Dockerfile             # 隔离的选手工作台/服务
+├── docker-compose.yml     # 本地端口和容器安全配置
+├── player/                # 选手材料、工作台或服务代码
 └── organizer/
     ├── spec.json          # 完整规格和真实 Flag，必须保密
     └── solver.py          # 官方自动 Solver

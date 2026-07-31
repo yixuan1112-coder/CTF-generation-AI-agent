@@ -75,7 +75,9 @@ def export_player_bundle(bundle: Path, output: Path) -> Path:
                 path = source / name if (source / name).is_file() else bundle / name
                 if path.is_file(): archive.write(path, name)
             for path in (source / "player").rglob("*"):
-                if path.is_file(): archive.write(path, path.relative_to(source))
+                if not path.is_file() or path.name == "flag.txt":
+                    continue
+                archive.write(path, path.relative_to(source))
     finally:
         if temporary is not None:
             temporary.cleanup()

@@ -22,6 +22,7 @@ class ChallengeSpec:
     port: int | None = None
     variant: str = "default"
     seed: str | None = None
+    mechanics: dict[str, Any] = field(default_factory=dict)
     flag: str = "flag{local_training_only}"
 
     @classmethod
@@ -33,6 +34,7 @@ class ChallengeSpec:
         result = asdict(self)
         if not include_flag:
             result.pop("flag", None)
+            result.pop("mechanics", None)
         return result
 
 

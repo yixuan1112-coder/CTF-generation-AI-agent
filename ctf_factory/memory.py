@@ -35,21 +35,57 @@ class ExperienceMemory:
                 score INTEGER NOT NULL,
                 passed INTEGER NOT NULL,
                 lessons_json TEXT NOT NULL,
+                mechanics_json TEXT NOT NULL DEFAULT '{}',
+                metrics_json TEXT NOT NULL DEFAULT '{}',
+                episode_json TEXT NOT NULL DEFAULT '{}',
+                parent_signature TEXT NOT NULL DEFAULT '',
+                generation INTEGER NOT NULL DEFAULT 0,
+                run_id TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        existing = {
+            row["name"] for row in self._connection.execute("PRAGMA table_info(experiences)").fetchall()
+        }
+        migrations = {
+            "mechanics_json": "TEXT NOT NULL DEFAULT '{}'",
+            "metrics_json": "TEXT NOT NULL DEFAULT '{}'",
+            "episode_json": "TEXT NOT NULL DEFAULT '{}'",
+            "parent_signature": "TEXT NOT NULL DEFAULT ''",
+            "generation": "INTEGER NOT NULL DEFAULT 0",
+            "run_id": "TEXT NOT NULL DEFAULT ''",
+        }
+        for name, declaration in migrations.items():
+            if name not in existing:
+                self._connection.execute(
+                    f"ALTER TABLE experiences ADD COLUMN {name} {declaration}"
+                )
         self._connection.commit()
 
     @staticmethod
     def signature(plan: dict[str, Any]) -> str:
         title_shape = re.sub(r"[^a-z0-9]+", " ", str(plan.get("title", "")).lower()).strip()
+        story_shape = " ".join(re.findall(r"[a-z0-9]{4,}", str(plan.get("story", "")).lower())[:24])
+        mechanics = json.dumps(plan.get("mechanics", {}), sort_keys=True, separators=(",", ":"))
         value = "|".join([
             str(plan.get("category", "")),
             str(plan.get("challenge_type", "")),
             str(plan.get("difficulty", "")),
             title_shape,
+            story_shape,
+            mechanics,
         ])
         return hashlib.sha256(value.encode()).hexdigest()
+
+    @staticmethod
+    def fingerprint(plan: dict[str, Any]) -> set[str]:
+        public = " ".join([
+            str(plan.get("title", "")),
+            str(plan.get("story", "")),
+            " ".join(map(str, plan.get("hints", []))) if isinstance(plan.get("hints"), list) else "",
+            json.dumps(plan.get("mechanics", {}), sort_keys=True),
+        ]).lower()
+        return set(re.findall(r"[a-z0-9_-]{3,}", public))
 
     @staticmethod
     def _safe_lessons(lessons: list[str]) -> list[str]:
@@ -62,6 +98,36 @@ class ExperienceMemory:
 
     def remember(self, plan: dict[str, Any], *, score: int, passed: bool,
                  lessons: list[str]) -> None:
+        self.remember_episode(
+            plan, score=score, passed=passed, lessons=lessons,
+            metrics={}, generation=0, run_id="", parent_signature="",
+        )
+
+    def remember_episode(
+        self,
+        plan: dict[str, Any],
+        *,
+        score: int,
+        passed: bool,
+        lessons: list[str],
+        metrics: dict[str, Any],
+        generation: int,
+        run_id: str,
+        parent_signature: str,
+    ) -> None:
+        safe_lessons = self._safe_lessons(lessons)
+        mechanics = plan.get("mechanics", {}) if isinstance(plan.get("mechanics"), dict) else {}
+        safe_metrics = {
+            str(key)[:60]: value
+            for key, value in metrics.items()
+            if isinstance(value, (str, int, float, bool)) or value is None
+        }
+        episode = {
+            "title": SECRET_PATTERN.sub("[REDACTED]", str(plan.get("title", "")))[:120],
+            "mechanics": mechanics,
+            "fingerprint": sorted(self.fingerprint(plan))[:80],
+            "lessons": safe_lessons,
+        }
         values = (
             self.signature(plan),
             str(plan.get("category", ""))[:40],
@@ -69,38 +135,85 @@ class ExperienceMemory:
             str(plan.get("difficulty", ""))[:20],
             max(0, min(100, int(score))),
             int(bool(passed)),
-            json.dumps(self._safe_lessons(lessons), ensure_ascii=False),
+            json.dumps(safe_lessons, ensure_ascii=False),
+            json.dumps(mechanics, ensure_ascii=False, sort_keys=True),
+            json.dumps(safe_metrics, ensure_ascii=False, sort_keys=True),
+            json.dumps(episode, ensure_ascii=False, sort_keys=True),
+            str(parent_signature)[:64],
+            max(0, min(20, int(generation))),
+            str(run_id)[:64],
         )
         with self._lock:
             self._connection.execute("""
                 INSERT INTO experiences
-                (signature, category, challenge_type, difficulty, score, passed, lessons_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                (signature, category, challenge_type, difficulty, score, passed, lessons_json,
+                 mechanics_json, metrics_json, episode_json, parent_signature, generation, run_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, values)
             self._connection.commit()
 
     def novelty_score(self, plan: dict[str, Any]) -> int:
         signature = self.signature(plan)
+        current = self.fingerprint(plan)
         with self._lock:
             duplicate = self._connection.execute(
                 "SELECT COUNT(*) FROM experiences WHERE signature = ?", (signature,)
             ).fetchone()[0]
-            reused = self._connection.execute(
-                "SELECT COUNT(*) FROM experiences WHERE category = ? AND challenge_type = ?",
+            rows = self._connection.execute(
+                """SELECT episode_json FROM experiences
+                   WHERE category = ? AND challenge_type = ?
+                   ORDER BY id DESC LIMIT 50""",
                 (str(plan.get("category", "")), str(plan.get("challenge_type", ""))),
-            ).fetchone()[0]
-        return max(0, 100 - duplicate * 45 - min(reused, 10) * 4)
+            ).fetchall()
+        similarities: list[float] = []
+        for row in rows:
+            episode = json.loads(row["episode_json"] or "{}")
+            previous = set(episode.get("fingerprint", []))
+            union = current | previous
+            similarities.append(len(current & previous) / len(union) if union else 0.0)
+        similarity_penalty = round(max(similarities, default=0.0) * 65)
+        reuse_penalty = min(len(rows), 12) * 2
+        return max(0, 100 - duplicate * 35 - similarity_penalty - reuse_penalty)
+
+    def retrieve(
+        self,
+        category: str,
+        challenge_type: str,
+        difficulty: str = "",
+        *,
+        limit: int = 8,
+    ) -> list[dict[str, Any]]:
+        clauses = ["category = ?", "challenge_type = ?"]
+        values: list[Any] = [category, challenge_type]
+        if difficulty:
+            clauses.append("difficulty = ?")
+            values.append(difficulty)
+        values.append(max(1, min(limit, 20)))
+        with self._lock:
+            rows = self._connection.execute(f"""
+                SELECT signature, score, passed, lessons_json, mechanics_json, metrics_json,
+                       parent_signature, generation, run_id, created_at
+                FROM experiences WHERE {' AND '.join(clauses)}
+                ORDER BY passed DESC, score DESC, id DESC LIMIT ?
+            """, values).fetchall()
+        return [{
+            "signature": row["signature"],
+            "score": int(row["score"]),
+            "passed": bool(row["passed"]),
+            "lessons": json.loads(row["lessons_json"] or "[]"),
+            "mechanics": json.loads(row["mechanics_json"] or "{}"),
+            "metrics": json.loads(row["metrics_json"] or "{}"),
+            "parent_signature": row["parent_signature"],
+            "generation": int(row["generation"]),
+            "run_id": row["run_id"],
+            "created_at": row["created_at"],
+        } for row in rows]
 
     def lessons_for(self, category: str, challenge_type: str, *, limit: int = 8) -> list[str]:
-        with self._lock:
-            rows = self._connection.execute("""
-                SELECT lessons_json FROM experiences
-                WHERE category = ? AND challenge_type = ?
-                ORDER BY id DESC LIMIT ?
-            """, (category, challenge_type, max(1, min(limit, 20)))).fetchall()
+        rows = self.retrieve(category, challenge_type, limit=max(1, min(limit, 20)))
         lessons: list[str] = []
         for row in rows:
-            for lesson in json.loads(row["lessons_json"]):
+            for lesson in row["lessons"]:
                 if lesson not in lessons:
                     lessons.append(lesson)
         return lessons[:limit]

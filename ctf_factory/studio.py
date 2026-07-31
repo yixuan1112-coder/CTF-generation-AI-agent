@@ -13,6 +13,7 @@ from typing import Any
 
 from .catalog import CATEGORY_INFO, TEMPLATES, runtime_delivery
 from .evolution import EvolutionEngine
+from .execution import ExecutableChallengeEvaluator
 from .llm import CompatibleLLM
 from .memory import ExperienceMemory
 from .models import DIFFICULTIES
@@ -77,17 +78,27 @@ class DockerInstanceManager:
         if "challenge" not in running.stdout.split():
             return {"running": False, "url": None, "command": None}
         container_port = int(runtime["container_port"])
-        published = self._run(bundle, "port", str(runtime.get("service", "challenge")),
-                              str(container_port), timeout=20).stdout.strip()
-        match = re.search(r":(\d+)\s*$", published)
-        if not match:
-            raise RuntimeError("Docker is running but no local challenge port was published")
-        host, port = "127.0.0.1", match.group(1)
+
+        def published_port(value: int) -> int:
+            published = self._run(bundle, "port", str(runtime.get("service", "challenge")),
+                                  str(value), timeout=20).stdout.strip()
+            match = re.search(r":(\d+)\s*$", published)
+            if not match:
+                raise RuntimeError("Docker is running but no local challenge port was published")
+            return int(match.group(1))
+
+        host, port = "127.0.0.1", published_port(container_port)
         protocol = str(runtime.get("protocol", "tcp"))
-        url = f"http://{host}:{port}" if protocol in {"http", "json-rpc"} else None
+        ui_container_port = int(runtime.get("ui_port", 0))
+        ui_port = published_port(ui_container_port) if ui_container_port else None
+        url_port = ui_port or port
+        url = f"http://{host}:{url_port}" if protocol in {
+            "http", "json-rpc", "download", "adb",
+        } or ui_port else None
         client = str(runtime.get("client", "")).format(host=host, port=port, url=url or "")
+        launch_url = client if protocol == "http" and client.startswith(("http://", "https://")) else url
         return {"running": True, "protocol": protocol, "host": host, "port": int(port),
-                "url": url, "command": client}
+                "ui_port": ui_port, "url": url, "launch_url": launch_url, "command": client}
 
     def start(self, slug: str) -> dict[str, Any]:
         bundle = self._bundle(slug)
@@ -97,7 +108,8 @@ class DockerInstanceManager:
             deadline = time.monotonic() + 10
             while state.get("running") and time.monotonic() < deadline:
                 try:
-                    with socket.create_connection((str(state["host"]), int(state["port"])), timeout=1):
+                    ready_port = int(state.get("ui_port") or state["port"])
+                    with socket.create_connection((str(state["host"]), ready_port), timeout=1):
                         # Docker Desktop may accept the first forwarded connection just
                         # before the container service is ready to answer it.
                         time.sleep(0.5)
@@ -178,6 +190,18 @@ def create_plan(payload: dict[str, Any], llm: CompatibleLLM,
         (" / Echo Path", "Separate decoy behavior from the vulnerable data flow."),
         (" / Cold Start", "Reconstruct the system assumptions from minimal evidence."),
     )
+    mechanic_profiles = (
+        {"encoding_delta": 0, "decoy_density": 0, "reasoning_depth": 1,
+         "mutation_tag": "seed-direct"},
+        {"encoding_delta": 0, "decoy_density": 1, "reasoning_depth": 2,
+         "mutation_tag": "seed-decoy"},
+        {"encoding_delta": 1 if difficulty != "easy" else 0, "decoy_density": 2,
+         "reasoning_depth": 3, "mutation_tag": "seed-layered"},
+        {"encoding_delta": 0, "decoy_density": 3, "reasoning_depth": 3,
+         "mutation_tag": "seed-noisy"},
+        {"encoding_delta": 1 if difficulty == "hard" else 0, "decoy_density": 1,
+         "reasoning_depth": 4, "mutation_tag": "seed-deep"},
+    )
 
     def candidate_factory(index: int, past_lessons: list[str]) -> dict[str, Any]:
         try:
@@ -200,14 +224,24 @@ def create_plan(payload: dict[str, Any], llm: CompatibleLLM,
             plan["brain"] = "offline"
         else:
             plan["brain"] = getattr(llm, "model", "configured-model")
+        supplied_mechanics = plan.get("mechanics")
+        plan["mechanics"] = {
+            **mechanic_profiles[index % len(mechanic_profiles)],
+            **(supplied_mechanics if isinstance(supplied_mechanics, dict) else {}),
+        }
         return _normalize_plan(plan, difficulty=difficulty)
 
     try:
+        evaluator = ExecutableChallengeEvaluator(llm)
         return EvolutionEngine(memory).evolve(
             candidate_factory,
             allowed=set(TEMPLATES),
             count=int(payload.get("evolution_candidates", 3)),
             experience_lessons=lessons,
+            executable_evaluator=lambda candidate, index, generation: evaluator.evaluate(
+                candidate, candidate_index=index, generation=generation
+            ),
+            generations=int(payload.get("evolution_generations", 2)),
         )
     finally:
         if owned_memory:
@@ -232,6 +266,12 @@ def record_experience(bundle: Path, plan: dict[str, Any], reports: list[Any],
     stats = memory.stats()
     quality_path = bundle / "quality.json"
     quality = json.loads(quality_path.read_text(encoding="utf-8"))
+    quality["version"] = "0.8"
+    quality["score"] = int(evolution.get("winner_score", quality.get("score", 0)))
+    quality["dimensions"] = dict(review.get("dimensions", quality.get("dimensions", {})))
+    quality["passed"] = bool(review.get("passed")) and all(report.passed for report in reports)
+    quality["evidence"] = list(review.get("evidence", quality.get("evidence", [])))
+    quality["risks"] = list(review.get("risks", []))
     quality["adversarial_evolution"] = evolution
     quality["experience_memory"] = stats
     quality_path.write_text(json.dumps(quality, indent=2), encoding="utf-8")
@@ -271,7 +311,8 @@ class StudioHandler(BaseHTTPRequestHandler):
                              "memory": self.memory.stats(),
                              "agents": ["Generator", "Solver", "Breaker", "Judge"]}); return
         name = "index.html" if self.path in ("/", "/index.html") else self.path.lstrip("/")
-        if name not in {"index.html", "app.js", "style.css", "knowledge.css", "instance.css"}:
+        if name not in {"index.html", "app.js", "style.css", "knowledge.css", "instance.css",
+                        "evaluation.css"}:
             self.send_error(404); return
         path = STATIC_ROOT / name
         data = path.read_bytes(); content_type = {".html": "text/html", ".js": "text/javascript", ".css": "text/css"}[path.suffix]
