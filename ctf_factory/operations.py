@@ -56,13 +56,14 @@ def export_player_bundle(bundle: Path, output: Path) -> Path:
     spec = json.loads((bundle / "challenge.json").read_text(encoding="utf-8"))
     output.mkdir(parents=True, exist_ok=True)
     target = output / f"{spec['slug']}-player.zip"
-    allowed = ["README.md", "challenge.json", "quality.json", "Dockerfile", "docker-compose.yml"]
+    allowed = ["README.md", "challenge.json", "quality.json", "runtime.json", "deployment.json",
+               "Dockerfile", "docker-compose.yml", "launch-android.ps1"]
     source = bundle
     temporary = None
     # Web source bundles contain the live local validation flag so the organizer
     # solver and arena can test them. Never distribute that value: rebuild the
     # player-facing service with a conspicuous deployment placeholder instead.
-    if spec.get("category") == "web":
+    if spec.get("delivery") in {"web", "tcp", "api", "blockchain", "mqtt"}:
         temporary = tempfile.TemporaryDirectory()
         private = json.loads((bundle / "organizer/spec.json").read_text(encoding="utf-8"))
         redacted = ChallengeSpec.from_dict(private)

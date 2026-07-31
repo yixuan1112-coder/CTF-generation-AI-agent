@@ -6,6 +6,7 @@
   <title>CTF Forge Studio</title>
   <link rel="stylesheet" href="/style.css">
   <link rel="stylesheet" href="/knowledge.css">
+  <link rel="stylesheet" href="/instance.css">
 </head>
 <body>
   <div class="noise"></div>
@@ -101,7 +102,11 @@
         <p id="cStory" class="challenge-story"></p>
         <section class="instance">
           <div><small>INSTANCE</small><h4 id="cDelivery"></h4><p id="cLaunch"></p></div>
-          <button id="launchButton">Open in Workspace</button>
+          <div class="instance-actions">
+            <button id="launchButton">Launch instance</button>
+            <a id="instanceLink" href="#" target="_blank" rel="noopener" hidden>Open challenge</a>
+            <button id="stopButton" class="secondary" hidden>Stop instance</button>
+          </div>
         </section>
         <section class="hint-section"><div class="hint-title"><span>HINTS</span><small>Reveal progressively without exposing the answer</small></div><div id="cHints"></div></section>
         <section class="flag-box"><label>FLAG SUBMISSION<input placeholder="flag{...}" disabled></label><button disabled>Submit</button></section>

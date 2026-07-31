@@ -9,7 +9,7 @@ from ctf_factory.models import DIFFICULTIES
 from ctf_factory.orchestrator import ChallengeFactory
 from ctf_factory.arena import run_arena
 from ctf_factory.operations import batch_generate, export_player_bundle
-from ctf_factory.studio import create_plan
+from ctf_factory.studio import DockerInstanceManager, create_plan
 
 
 class OfflineLLM:
@@ -39,6 +39,18 @@ class FactoryTests(unittest.TestCase):
             public = json.loads((bundle / "challenge.json").read_text())
             self.assertEqual(public["title"], "Neon Archive")
             self.assertTrue(all(report.passed for report in reports))
+
+    def test_docker_manager_restricts_bundles_to_generated_web_challenges(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bundle, _ = ChallengeFactory(OfflineLLM()).generate(
+                category="web", challenge_type="weak-session", difficulty="easy",
+                theme="studio", output=root, variant="instance")
+            manager = DockerInstanceManager(root)
+            self.assertEqual(manager._bundle(bundle.name), bundle.resolve())
+            self.assertIn('ports: ["127.0.0.1::8000"]', (bundle / "docker-compose.yml").read_text())
+            with self.assertRaises(ValueError):
+                manager._bundle("../outside")
 
     def test_all_template_difficulty_combinations_generate_and_solve(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -90,6 +102,40 @@ class FactoryTests(unittest.TestCase):
             bundle, _ = ChallengeFactory(OfflineLLM()).generate(
                 category="web", challenge_type="query-injection", difficulty="hard",
                 theme="redaction", output=root / "generated")
+            live_flag = json.loads((bundle / "organizer/spec.json").read_text())["flag"]
+            archive = export_player_bundle(bundle, root / "exports")
+            import zipfile
+            with zipfile.ZipFile(archive) as zipped:
+                joined = b"\n".join(zipped.read(name) for name in zipped.namelist())
+            self.assertNotIn(live_flag.encode(), joined)
+            self.assertIn(b"flag{replace_at_deployment}", joined)
+
+    def test_runtime_contracts_cover_service_and_attachment_deliveries(self):
+        cases = {
+            ("web", "weak-session"): ("docker", "http"),
+            ("pwn", "stack-overflow-sim"): ("docker", "tcp"),
+            ("ai-ml", "prompt-injection"): ("docker", "http"),
+            ("blockchain", "storage-slots"): ("docker", "json-rpc"),
+            ("iot", "mqtt-retain"): ("docker", "mqtt"),
+            ("mobile", "android-manifest"): ("android", "adb"),
+            ("reverse", "xor-strings"): ("attachment", "download"),
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for (category, challenge_type), expected in cases.items():
+                with self.subTest(category=category):
+                    bundle, _ = ChallengeFactory(OfflineLLM()).generate(
+                        category=category, challenge_type=challenge_type, difficulty="easy",
+                        theme="runtime contract", output=root)
+                    runtime = json.loads((bundle / "runtime.json").read_text())
+                    self.assertEqual((runtime["kind"], runtime["protocol"]), expected)
+
+    def test_pwn_service_export_does_not_disclose_live_flag(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bundle, _ = ChallengeFactory(OfflineLLM()).generate(
+                category="pwn", challenge_type="stack-overflow-sim", difficulty="easy",
+                theme="service export", output=root / "generated")
             live_flag = json.loads((bundle / "organizer/spec.json").read_text())["flag"]
             archive = export_player_bundle(bundle, root / "exports")
             import zipfile

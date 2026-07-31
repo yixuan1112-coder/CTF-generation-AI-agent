@@ -4,7 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
-from .catalog import CATEGORY_INFO, list_templates
+from .catalog import CATEGORY_INFO, list_templates, runtime_delivery
 from .models import DIFFICULTIES
 from .orchestrator import ChallengeFactory, FactoryError
 from .arena import run_arena
@@ -42,7 +42,9 @@ def main() -> int:
     arena.add_argument("bundle", type=Path)
     args = parser.parse_args()
     if args.command == "list":
-        print(json.dumps([{"category": t.category, "type": t.challenge_type, "delivery": t.delivery} for t in list_templates()], indent=2))
+        print(json.dumps([{"category": t.category, "type": t.challenge_type,
+                           "delivery": runtime_delivery(t.category, t.delivery)}
+                          for t in list_templates()], indent=2))
         return 0
     if args.command == "doctor":
         report = doctor(); print(json.dumps(report, indent=2)); return 0 if report["ready"] else 1

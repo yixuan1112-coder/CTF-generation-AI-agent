@@ -1,0 +1,29 @@
+.instance button,
+.instance a,
+.challenge-footer button {
+  background: var(--orange);
+  color: white;
+  border: 0;
+  border-radius: 24px;
+  padding: 12px 18px;
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.instance-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.instance-actions .secondary {
+  background: #555;
+}
+
+.instance-actions [hidden] {
+  display: none;
+}

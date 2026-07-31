@@ -10,6 +10,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from .models import DIFFICULTIES, ChallengeSpec
+from .runtime import configure_runtime
 
 
 def _layers(spec: ChallengeSpec) -> int:
@@ -39,6 +40,7 @@ def render_bundle(spec: ChallengeSpec, root: Path) -> Path:
     (out / "organizer").mkdir()
     renderer = RENDERERS[(spec.category, spec.challenge_type)]
     renderer(spec, out)
+    configure_runtime(spec, out)
     public = spec.to_dict(include_flag=False)
     _write(out / "challenge.json", json.dumps(public, ensure_ascii=False, indent=2))
     _write(out / "organizer/spec.json", json.dumps(spec.to_dict(), ensure_ascii=False, indent=2))
@@ -51,7 +53,7 @@ def _web_common(spec: ChallengeSpec, out: Path, app: str, solver: str) -> None:
     _write(out / "organizer/solver.py", solver)
     _write(out / "player/flag.txt", spec.flag + "\n")
     _write(out / "Dockerfile", 'FROM python:3.12-alpine\nWORKDIR /app\nCOPY player /app\nUSER 65534\nEXPOSE 8000\nCMD ["python", "app.py"]\n')
-    _write(out / "docker-compose.yml", 'services:\n  challenge:\n    build: .\n    ports: ["8000:8000"]\n    read_only: true\n    cap_drop: [ALL]\n    security_opt: ["no-new-privileges:true"]\n')
+    _write(out / "docker-compose.yml", 'services:\n  challenge:\n    build: .\n    ports: ["127.0.0.1::8000"]\n    read_only: true\n    cap_drop: [ALL]\n    security_opt: ["no-new-privileges:true"]\n')
 
 
 def web_path(spec: ChallengeSpec, out: Path) -> None:

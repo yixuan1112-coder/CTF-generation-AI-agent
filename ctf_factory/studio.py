@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
+import socket
+import subprocess
+import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-from .catalog import CATEGORY_INFO, TEMPLATES
+from .catalog import CATEGORY_INFO, TEMPLATES, runtime_delivery
 from .llm import CompatibleLLM
 from .models import DIFFICULTIES
 from .orchestrator import ChallengeFactory
@@ -15,11 +20,102 @@ from .operations import export_player_bundle
 
 STATIC_ROOT = Path(__file__).with_name("studio_static")
 MAX_BODY = 64 * 1024
+INSTANCE_LOCK = threading.Lock()
+
+
+class DockerInstanceManager:
+    """Manage only reviewed Web bundles under the configured generated root."""
+
+    def __init__(self, output: Path) -> None:
+        self.output = output.resolve()
+
+    def _bundle(self, slug: str) -> Path:
+        if not re.fullmatch(r"[a-z0-9-]{1,96}", slug):
+            raise ValueError("invalid challenge id")
+        bundle = (self.output / slug).resolve()
+        try:
+            bundle.relative_to(self.output)
+        except ValueError as exc:
+            raise ValueError("challenge is outside the generated root") from exc
+        metadata_path = bundle / "challenge.json"
+        compose_path = bundle / "docker-compose.yml"
+        runtime_path = bundle / "runtime.json"
+        if not metadata_path.is_file() or not compose_path.is_file() or not runtime_path.is_file():
+            raise ValueError("generated service challenge not found")
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        runtime = json.loads(runtime_path.read_text(encoding="utf-8"))
+        if metadata.get("slug") != slug or runtime.get("kind") != "docker":
+            raise ValueError("challenge is not an approved Docker bundle")
+        return bundle
+
+    @staticmethod
+    def _run(bundle: Path, *args: str, timeout: int = 180) -> subprocess.CompletedProcess[str]:
+        if shutil.which("docker") is None:
+            raise RuntimeError("Docker CLI is not installed or not available on PATH")
+        try:
+            result = subprocess.run(
+                ["docker", "compose", *args],
+                cwd=bundle,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError("Docker operation timed out") from exc
+        if result.returncode:
+            detail = (result.stderr or result.stdout or "Docker operation failed").strip()
+            raise RuntimeError(detail[-2000:])
+        return result
+
+    def status(self, slug: str) -> dict[str, Any]:
+        bundle = self._bundle(slug)
+        runtime = json.loads((bundle / "runtime.json").read_text(encoding="utf-8"))
+        running = self._run(bundle, "ps", "--status", "running", "--services", timeout=20)
+        if "challenge" not in running.stdout.split():
+            return {"running": False, "url": None, "command": None}
+        container_port = int(runtime["container_port"])
+        published = self._run(bundle, "port", str(runtime.get("service", "challenge")),
+                              str(container_port), timeout=20).stdout.strip()
+        match = re.search(r":(\d+)\s*$", published)
+        if not match:
+            raise RuntimeError("Docker is running but no local challenge port was published")
+        host, port = "127.0.0.1", match.group(1)
+        protocol = str(runtime.get("protocol", "tcp"))
+        url = f"http://{host}:{port}" if protocol in {"http", "json-rpc"} else None
+        client = str(runtime.get("client", "")).format(host=host, port=port, url=url or "")
+        return {"running": True, "protocol": protocol, "host": host, "port": int(port),
+                "url": url, "command": client}
+
+    def start(self, slug: str) -> dict[str, Any]:
+        bundle = self._bundle(slug)
+        with INSTANCE_LOCK:
+            self._run(bundle, "up", "-d", "--build")
+            state = self.status(slug)
+            deadline = time.monotonic() + 10
+            while state.get("running") and time.monotonic() < deadline:
+                try:
+                    with socket.create_connection((str(state["host"]), int(state["port"])), timeout=1):
+                        # Docker Desktop may accept the first forwarded connection just
+                        # before the container service is ready to answer it.
+                        time.sleep(0.5)
+                        return state
+                except OSError:
+                    time.sleep(0.2)
+                    state = self.status(slug)
+            raise RuntimeError("Docker started, but the challenge service did not become ready")
+
+    def stop(self, slug: str) -> dict[str, Any]:
+        bundle = self._bundle(slug)
+        with INSTANCE_LOCK:
+            self._run(bundle, "down", "--remove-orphans", timeout=60)
+        return {"running": False, "url": None, "command": None}
 
 
 def _templates() -> list[dict[str, str]]:
     return [{"category": c, "challenge_type": t, "title": info.title,
-             "vulnerability": info.vulnerability, "delivery": info.delivery,
+             "vulnerability": info.vulnerability,
+             "delivery": runtime_delivery(c, info.delivery),
              "category_name": CATEGORY_INFO[c]["name"]}
             for (c, t), info in TEMPLATES.items()]
 
@@ -106,7 +202,7 @@ class StudioHandler(BaseHTTPRequestHandler):
                              "categories": [{"id": key, **value} for key, value in CATEGORY_INFO.items()],
                              "brain": {"configured": self.llm.configured, "model": self.llm.model}}); return
         name = "index.html" if self.path in ("/", "/index.html") else self.path.lstrip("/")
-        if name not in {"index.html", "app.js", "style.css", "knowledge.css"}:
+        if name not in {"index.html", "app.js", "style.css", "knowledge.css", "instance.css"}:
             self.send_error(404); return
         path = STATIC_ROOT / name
         data = path.read_bytes(); content_type = {".html": "text/html", ".js": "text/javascript", ".css": "text/css"}[path.suffix]
@@ -137,12 +233,23 @@ class StudioHandler(BaseHTTPRequestHandler):
                     design=plan)
                 archive = export_player_bundle(bundle, Path("exports"))
                 public = json.loads((bundle / "challenge.json").read_text(encoding="utf-8"))
+                runtime = json.loads((bundle / "runtime.json").read_text(encoding="utf-8"))
                 self._json(201, {
                     "bundle": str(bundle.resolve()), "archive": str(archive.resolve()),
                     "challenge": public, "category_info": CATEGORY_INFO[category],
                     "gates": [r.__dict__ for r in reports],
-                    "launch": "docker compose up --build" if public["delivery"] == "web" else "Download player bundle",
+                    "launch": runtime.get("client", "Download player bundle"),
+                    "runtime": runtime,
+                    "instance_id": public["slug"] if runtime.get("kind") == "docker" else None,
                 }); return
+            if self.path in {"/api/instance/start", "/api/instance/status", "/api/instance/stop"}:
+                slug = str(payload.get("instance_id", ""))
+                manager = DockerInstanceManager(self.output)
+                if self.path.endswith("/start"):
+                    self._json(200, manager.start(slug)); return
+                if self.path.endswith("/stop"):
+                    self._json(200, manager.stop(slug)); return
+                self._json(200, manager.status(slug)); return
             self._json(404, {"error": "not found"})
         except Exception as exc:
             self._json(400, {"error": str(exc)})

@@ -17,6 +17,18 @@ CATEGORY_INFO = {
     "mobile": {"name": "移动安全", "english": "Mobile / Android Security", "icon": "APK"},
 }
 
+RUNTIME_DELIVERIES = {
+    "pwn": "tcp",
+    "ai-ml": "api",
+    "blockchain": "blockchain",
+    "iot": "mqtt",
+    "mobile": "android",
+}
+
+
+def runtime_delivery(category: str, fallback: str) -> str:
+    return RUNTIME_DELIVERIES.get(category, fallback)
+
 
 @dataclass(frozen=True)
 class TemplateInfo:
@@ -82,6 +94,7 @@ def make_spec(category: str, challenge_type: str, difficulty: str, theme: str, v
         steps.insert(-1, "Remove one additional encoding or decoy layer.")
     if level >= 3:
         steps.insert(-1, "Infer the missing parameter from the supplied evidence.")
+    delivery = runtime_delivery(category, template.delivery)
     return ChallengeSpec(
         slug=slug,
         title=f"{template.title} [{difficulty.title()}]",
@@ -92,8 +105,8 @@ def make_spec(category: str, challenge_type: str, difficulty: str, theme: str, v
         vulnerability=template.vulnerability,
         intended_solution=steps,
         hints=list(template.hints[: 4 - level]),
-        delivery=template.delivery,
-        port=8000 if template.delivery == "web" else None,
+        delivery=delivery,
+        port={"web": 8000, "api": 8000, "tcp": 31337, "blockchain": 8545, "mqtt": 1883}.get(delivery),
         variant=variant,
         seed=seed,
     )

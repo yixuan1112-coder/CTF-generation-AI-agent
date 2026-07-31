@@ -12,7 +12,7 @@ class CompatibleLLM:
     def __init__(self) -> None:
         self.base_url = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1").rstrip("/")
         self.api_key = os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY")
-        self.model = os.getenv("LLM_MODEL", "gpt-5.6-terra")
+        self.model = os.getenv("LLM_MODEL", "gpt-5-mini")
 
     @property
     def configured(self) -> bool:
