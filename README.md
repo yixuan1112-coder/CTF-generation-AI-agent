@@ -1,4 +1,4 @@
-# CTF Arena Factory v0.4
+# CTF Arena Factory v0.6
 
 ## Visual CTF Studio
 
@@ -21,17 +21,35 @@ templates, but bundle generation, flags, solvers, and release gates remain local
 | Web | `path-normalization` | Docker Web 服务 |
 | Web | `weak-session` | Docker Web 服务 |
 | Web | `query-injection` | Docker Web 服务 |
+| Reverse | `xor-strings` | 混淆字符串制品 |
+| Reverse | `bytecode-vm` | 自定义 VM 字节码 |
+| Reverse | `license-check` | 校验表逆向 |
+| Pwn | `stack-overflow-sim` | 离线栈内存模拟 |
+| Pwn | `format-string-sim` | 格式化字符串栈模拟 |
+| Pwn | `integer-overflow-sim` | 固定位宽整数模拟 |
 | Crypto | `repeating-xor` | 静态附件 |
 | Crypto | `weak-rsa` | 静态附件 |
 | Crypto | `lcg-stream` | 静态附件 |
 | Forensics | `log-fragments` | 日志证据包 |
 | Forensics | `zip-recovery` | 损坏的 ZIP 证据 |
 | Forensics | `packet-timing` | 数据包时间线 CSV |
+| Misc | `ppm-lsb` | PPM 图像隐写 |
+| Misc | `whitespace-code` | 空白字符隐写 |
+| Misc | `encoding-matryoshka` | 多层编码信号 |
+| Blockchain | `storage-slots` | 合约存储快照 |
+| Blockchain | `event-log` | 链上事件日志 |
+| Blockchain | `nonce-reuse` | 玩具签名样本 |
 | AI/ML | `prompt-injection` | 模拟 Agent 追踪证据 |
 | AI/ML | `rag-poisoning` | 离线检索语料库 |
 | AI/ML | `model-extraction` | 小型线性模型查询样本 |
+| IoT | `firmware-strings` | 固件镜像 |
+| IoT | `uart-fragments` | UART 启动日志 |
+| IoT | `mqtt-retain` | MQTT 消息捕获 |
+| Mobile | `android-manifest` | APK 组件审计 |
+| Mobile | `dex-obfuscation` | Smali 字符串逆向 |
+| Mobile | `native-library` | JNI 原生逻辑逆向 |
 
-每个类型支持 `easy`、`medium`、`hard`，共 **36 种组合**。
+每个类型支持 `easy`、`medium`、`hard`，共 **90 种组合**。
 
 难度不是单纯标签：更高难度会增加编码/干扰层、解题步骤并减少提示。每次生成都会使用随机 Flag，并自动运行组织者 Solver；Solver 无法还原 Flag 时不会发布题包。
 
@@ -134,7 +152,7 @@ $env:LLM_MODEL="gpt-4.1-mini"
 python -m unittest discover -s tests -v
 ```
 
-测试会生成并求解全部 36 种组合，并验证三个 Web 模板的攻防补丁回归。
+测试会生成并求解全部 90 种组合，并验证三个 Web 模板的攻防补丁回归。
 
 ## 安全边界
 

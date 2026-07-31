@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from ctf_factory.catalog import TEMPLATES, make_spec
+from ctf_factory.catalog import CATEGORY_INFO, TEMPLATES, make_spec
 from ctf_factory.gates import audit_spec
 from ctf_factory.models import DIFFICULTIES
 from ctf_factory.orchestrator import ChallengeFactory
@@ -18,6 +18,11 @@ class OfflineLLM:
 
 
 class FactoryTests(unittest.TestCase):
+    def test_catalog_covers_ten_domains_and_30_types(self):
+        self.assertEqual(len(CATEGORY_INFO), 10)
+        self.assertEqual(len(TEMPLATES), 30)
+        self.assertTrue(all(sum(1 for category, _ in TEMPLATES if category == key) >= 3 for key in CATEGORY_INFO))
+
     def test_studio_offline_plan_stays_on_allow_list(self):
         class OfflineDesigner:
             def design_challenge(self, **kwargs): return None
@@ -35,7 +40,7 @@ class FactoryTests(unittest.TestCase):
             self.assertEqual(public["title"], "Neon Archive")
             self.assertTrue(all(report.passed for report in reports))
 
-    def test_all_36_combinations_generate_and_solve(self):
+    def test_all_template_difficulty_combinations_generate_and_solve(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for category, challenge_type in TEMPLATES:

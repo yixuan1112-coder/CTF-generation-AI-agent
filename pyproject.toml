@@ -1,6 +1,6 @@
 [project]
 name = "ctf-arena-factory"
-version = "0.4.0"
+version = "0.6.0"
 description = "AI-assisted, validator-gated CTF challenge factory"
 requires-python = ">=3.11"
 
