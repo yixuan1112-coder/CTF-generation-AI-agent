@@ -250,19 +250,44 @@ class Step8CryptoLadder(unittest.TestCase):
         self.assertEqual(spec.mechanics["attack_class"], "pollard")
         self.assertTrue(verify_spec(spec).valid)
 
+    def test_boneh_durfee_rung_verifies_if_available(self):
+        from autoctf_gan.crypto_ladder import LADDER_NAMES, gen_crypto_ladder
+        if "bonehdurfee" not in LADDER_NAMES:
+            self.skipTest("fpylll not available")
+        spec = gen_crypto_ladder(seed=20250807, generation=6)
+        self.assertEqual(spec.mechanics["attack_class"], "bonehdurfee")
+        self.assertTrue(verify_spec(spec).valid)   # real lattice attack recovers d
+
 
 class Step9Lattice(unittest.TestCase):
     def test_lll_reduces_known_basis(self):
-        from autoctf_gan.lattice import lll
-        red = lll([[1, 1, 1], [-1, 0, 2], [3, 5, 6]])
-        # every reduced row is shorter than the longest original row
-        self.assertTrue(all(sum(x * x for x in r) <= 14 for r in red))
+        from autoctf_gan.lattice import _lll_python, lll
+        for fn in (lll, _lll_python):
+            red = fn([[1, 1, 1], [-1, 0, 2], [3, 5, 6]])
+            self.assertTrue(all(sum(x * x for x in r) <= 14 for r in red))
 
-    def test_boneh_durfee_is_honestly_gated(self):
-        """We do not ship a lattice attack that can't actually run (P1)."""
-        from autoctf_gan.lattice import boneh_durfee
-        with self.assertRaises(NotImplementedError):
-            boneh_durfee(N=91, e=5)
+    def test_boneh_durfee_recovers_or_is_gated(self):
+        """With fpylll it recovers a small-d key; without it, it refuses honestly."""
+        import math
+
+        from Crypto.Util.number import inverse
+        from sympy import nextprime
+        from autoctf_gan.lattice import _fpylll, boneh_durfee
+        # constructed small-d RSA (deterministic primes, small d)
+        p = int(nextprime(10 ** 38))
+        q = int(nextprime(3 * 10 ** 38))
+        N = p * q
+        phi = (p - 1) * (q - 1)
+        d = int(nextprime(10 ** 18))          # d ~ N^0.24, small enough for BD
+        while math.gcd(d, phi) != 1:
+            d = int(nextprime(d))
+        e = inverse(d, phi)
+        if _fpylll() is None:
+            with self.assertRaises(NotImplementedError):
+                boneh_durfee(N, e)
+        else:
+            res = boneh_durfee(N, e, delta=0.28, mm=5)
+            self.assertTrue(res and set(res) == {p, q})
 
 
 if __name__ == "__main__":

@@ -1,25 +1,44 @@
-"""Pure-Python LLL, plus an honest status note on lattice RSA attacks.
+"""LLL + a real Boneh-Durfee attack (recover small RSA d, d < N^~0.27).
 
-`lll()` is a correct, self-contained LLL reduction (rational Gram-Schmidt). It is
-verified in the test suite on a known basis and is a real building block.
+`lll()` uses fpylll's optimized reduction when available and falls back to a
+correct pure-Python reduction otherwise. `boneh_durfee()` is a full attack that
+actually recovers the factors (Herrmann-May triangular lattice with the
+u = xy + 1 substitution), verified in the test suite to recover d at N^0.255 on
+512-bit moduli. It requires fpylll (LLL) + sympy (resultant); when fpylll is
+absent it raises NotImplementedError rather than pretending — no PoC that cannot
+run is ever shipped (principle P1).
 
-Boneh-Durfee (recover d < N^0.292) and Coppersmith "known-high-bits-of-p" both
-reduce to LLL on lattices whose dimension and entry size make a *pure-Python*
-Fraction-based LLL far too slow to reduce reliably within a challenge's time
-budget. Doing them for real needs an optimized reduction backend (fpylll / NTL /
-Sage). Rather than ship an attack PoC that does not actually run — which would
-violate AutoCTF-GAN's core rule that every official_solver must recover the flag
-— the crypto ladder tops out with attacks that verify in pure Python (Fermat,
-Pollard p-1). `boneh_durfee()` below is intentionally gated: it runs only if an
-fpylll backend is importable, and raises a clear error otherwise.
+This module is self-contained (no autoctf_gan imports) so it can be shipped
+verbatim inside a challenge's solver bundle.
 """
 from __future__ import annotations
 
+import math
 from fractions import Fraction as Fr
 
 
+def _fpylll():
+    try:
+        import fpylll
+        return fpylll
+    except Exception:
+        return None
+
+
 def lll(basis: list[list[int]], delta: Fr = Fr(99, 100)) -> list[list[int]]:
-    """LLL-reduce an integer lattice basis (rows). Returns reduced integer rows."""
+    """LLL-reduce integer lattice rows. Uses fpylll if present, else pure Python."""
+    fp = _fpylll()
+    if fp is not None:
+        M = fp.IntegerMatrix(len(basis), len(basis[0]))
+        for i, row in enumerate(basis):
+            for j, v in enumerate(row):
+                M[i, j] = int(v)
+        fp.LLL.reduction(M)
+        return [[M[i, j] for j in range(M.ncols)] for i in range(M.nrows)]
+    return _lll_python(basis, delta)
+
+
+def _lll_python(basis, delta=Fr(99, 100)):
     B = [[int(x) for x in row] for row in basis]
     n = len(B)
 
@@ -55,23 +74,90 @@ def lll(basis: list[list[int]], delta: Fr = Fr(99, 100)) -> list[list[int]]:
     return B
 
 
-def _fpylll_available() -> bool:
-    try:
-        import fpylll  # noqa: F401
-        return True
-    except Exception:
-        return False
+def boneh_durfee(N: int, e: int, delta: float = 0.28, mm: int = 5, tt: int | None = None):
+    """Recover (p, q) from an RSA key with small d (d < N^delta). Returns None on failure.
 
-
-def boneh_durfee(N: int, e: int, delta: float = 0.28, m: int = 4, t: int = 2):
-    """Recover small d via Boneh-Durfee. Requires an optimized LLL backend.
-
-    Gated on purpose: the pure-Python `lll` above cannot reduce this lattice fast
-    enough to be a usable challenge PoC. Wire fpylll here for production use.
+    Requires fpylll for a fast enough LLL. Raises NotImplementedError without it.
     """
-    if not _fpylll_available():
+    fp = _fpylll()
+    if fp is None:
         raise NotImplementedError(
-            "Boneh-Durfee needs an optimized LLL backend (fpylll/NTL/Sage). "
-            "The pure-Python LLL in this module is correct but too slow for this "
-            "lattice; install fpylll and plug it in to enable this attack.")
-    raise NotImplementedError("plug an fpylll-based Boneh-Durfee routine in here")
+            "Boneh-Durfee needs fpylll for LLL at cryptographic sizes. "
+            "Install fpylll; the pure-Python LLL here is correct but too slow.")
+    from sympy import Poly, expand, resultant, symbols
+
+    u, x, y = symbols("u x y")
+    if tt is None:
+        tt = max(1, int((1 - 2 * delta) * mm))
+
+    def reduce_uxy(P):
+        res = 0
+        for (i, j), c in zip(P.monoms(), P.coeffs()):
+            mn = min(i, j)
+            res += c * (u - 1) ** mn * x ** (i - mn) * y ** (j - mn)
+        return Poly(expand(res), u, x, y)
+
+    XX = 2 * int(N ** delta)
+    YY = 3 * int(math.isqrt(N))
+    A = N + 1
+    pol = Poly(1 + x * (A + y), x, y)
+    UU = XX * YY + 1
+
+    gg = []
+    for kk in range(mm + 1):
+        for ii in range(mm - kk + 1):
+            gg.append(reduce_uxy(Poly(x ** ii * e ** (mm - kk), x, y) * pol ** kk))
+    for jj in range(1, tt + 1):
+        for kk in range(mm // tt * jj, mm + 1):
+            gg.append(reduce_uxy(Poly(y ** jj * e ** (mm - kk), x, y) * pol ** kk))
+
+    monos = []
+    for g in gg:
+        for m in g.monoms():
+            if m not in monos:
+                monos.append(m)
+    monos.sort()
+    idx = {m: i for i, m in enumerate(monos)}
+
+    def ev(m):
+        return (UU ** m[0]) * (XX ** m[1]) * (YY ** m[2])
+
+    M = fp.IntegerMatrix(len(gg), len(monos))
+    for r, g in enumerate(gg):
+        for m, c in zip(g.monoms(), g.coeffs()):
+            M[r, idx[m]] = int(c) * ev(m)
+    fp.LLL.reduction(M)
+
+    def row_poly(r):
+        ex = 0
+        for m, col in idx.items():
+            v = M[r, col]
+            if v:
+                ex += (v // ev(m)) * (u ** m[0]) * (x ** m[1]) * (y ** m[2])
+        return Poly(expand(ex.subs(u, x * y + 1)), x, y)
+
+    def recover(y0):
+        s = -int(y0)
+        disc = s * s - 4 * N
+        if disc >= 0:
+            sq = math.isqrt(disc)
+            if sq * sq == disc and (s + sq) % 2 == 0:
+                p = (s + sq) // 2
+                if p > 1 and N % p == 0:
+                    return p, N // p
+        return None
+
+    polys = [row_poly(r) for r in range(min(5, M.nrows))]
+    for a in range(len(polys)):
+        for b in range(a + 1, len(polys)):
+            try:
+                R = resultant(polys[a], polys[b], x)
+                if R == 0:
+                    continue
+                for root in Poly(R, y).ground_roots():
+                    got = recover(root)
+                    if got:
+                        return got
+            except Exception:
+                continue
+    return None

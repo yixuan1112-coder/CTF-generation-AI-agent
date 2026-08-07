@@ -58,7 +58,7 @@ def main() -> None:
     print("\nSTEP 6b  Crypto co-evolution — attack-CLASS ladder (each rung a real attack)")
     from autoctf_gan.tournament import TournamentConfig, run_tournament_events
     cfg = TournamentConfig(category="crypto", archetype_id="crypto.ladder",
-                           seed=20250807, max_generations=6)
+                           seed=20250807, max_generations=7)
     names = {}
     for e in run_tournament_events(cfg):
         if e["evt"] == "verify.verdict" and e["valid"]:

@@ -43,27 +43,28 @@ python -m autoctf_gan.api --fastapi         # production app (pip install fastap
 | `attachment` | subprocess codec | ✅ steps 1-4 |
 | `binary` | **gcc** compile + run + `strings` leak-gate | ✅ real binaries, obfuscation verified |
 | `crypto` | **Wiener attack** PoC (pure Python) | ✅ recovers small-d RSA; safe key rejected |
-| `crypto` ladder | **6 attack classes** rotating by generation | ✅ each rung a verified attack; co-evolves to elite |
+| `crypto` ladder | **7 attack classes** rotating by generation | ✅ each rung a verified attack, incl. Boneh–Durfee (fpylll) |
 | `web` | **Docker** build + run container + PoC | code complete; skips cleanly (no Docker here) |
 
 ### Crypto co-evolution ladder (`crypto_ladder.py`)
 
 Crypto difficulty escalates by rotating the **attack class** each generation —
-never by enlarging the modulus (that would be entropy growth). Six real,
+never by enlarging the modulus (that would be entropy growth). Seven real,
 self-contained PoCs form the ladder: small-`e` cube root → Håstad broadcast (CRT)
-→ common modulus (Bézout) → Wiener → Fermat → Pollard p−1. Every rung is verified
-by `verify_spec`; the attacker pool models rising field difficulty via the rung
-index, so the archetype co-evolves to the elite band around the Fermat rung
-(~5% solve) with Pollard as the near-unsolvable "final boss". Removing the
-weakness at any rung makes that rung's attack fail → the spec is rejected (P1).
+→ common modulus (Bézout) → Wiener → Fermat → Pollard p−1 → **Boneh–Durfee**.
+Every rung is verified by `verify_spec`; the attacker pool models rising field
+difficulty via the rung index, so the archetype co-evolves to the elite band and
+Boneh–Durfee is the near-unsolvable "final boss". Removing the weakness at any
+rung makes that rung's attack fail → the spec is rejected (P1).
 
-**Boneh–Durfee (`lattice.py`):** the intended lattice rung (recover d < N^0.292)
-reduces to LLL on a lattice too large for a *pure-Python* Fraction-based LLL to
-reduce within a challenge's time budget — it needs an optimized backend
-(fpylll/NTL/Sage). The correct, tested pure-Python `lll()` ships as a building
-block, and `boneh_durfee()` is deliberately gated (raises unless fpylll is
-importable) rather than shipped as a PoC that cannot actually run. Pollard p−1
-is the reliably-verifiable hard rung in its place.
+**Boneh–Durfee (`lattice.py`):** a real lattice attack recovering small `d` past
+Wiener's bound (`d ~ N^0.255` on 512-bit N, verified to recover in ≈1–11 s). It
+uses fpylll for LLL + sympy for the resultant (Herrmann–May triangular lattice
+with the `u = xy+1` substitution). It is gated on fpylll: with fpylll it runs and
+is wired in as the 7th rung; without it, `boneh_durfee()` raises
+`NotImplementedError` and the ladder simply omits the rung — no PoC that cannot
+run is ever shipped. `lll()` uses fpylll when present and falls back to a correct
+pure-Python reduction otherwise. Install: `pip install fpylll`.
 
 ### Attack/Defense arena (`arena_bridge.py`)
 

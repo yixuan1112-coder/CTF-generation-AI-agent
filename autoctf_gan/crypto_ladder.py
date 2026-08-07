@@ -60,9 +60,10 @@ def _keypair(rng, bits, e):
 
 def _spec(*, seed, generation, rank, challenge_type, story, vuln, solution,
           hints, artifacts, solver_src, flag, archetype_id, parent_spec_id,
-          mutation_ops, attack_class, target_solve_rate):
+          mutation_ops, attack_class, target_solve_rate, extra_solver_files=None):
     expected = hashlib.sha256(flag.encode()).hexdigest()
     slug = f"crypto-{attack_class}-{seed:06d}-g{generation}"
+    solver_files = {"solver.py": solver_src, **(extra_solver_files or {})}
     return ChallengeSpec(
         slug=slug, title=f"RSA {attack_class.title()} (Gen-{generation})",
         category="crypto", challenge_type=challenge_type, difficulty="hard",
@@ -77,9 +78,8 @@ def _spec(*, seed, generation, rank, challenge_type, story, vuln, solution,
         vuln_chain=[ChainStep(step=i + 1, primitive=f"{attack_class}_stage",
                               params={}, guard="crypto") for i in range(rank + 1)],
         artifacts=artifacts,
-        official_solver=OfficialSolver(entry="solver.py",
-                                       files={"solver.py": solver_src},
-                                       expected_flag_sha256=expected, max_runtime_s=30),
+        official_solver=OfficialSolver(entry="solver.py", files=solver_files,
+                                       expected_flag_sha256=expected, max_runtime_s=90),
         target_solve_rate=target_solve_rate,
     )
 
@@ -296,9 +296,65 @@ def gen_pollard(seed, generation, **kw):
                  seed=seed, generation=generation, **kw)
 
 
+# --- rank 6: Boneh-Durfee (small d beyond Wiener, lattice attack) -----------
+def _fpylll_available() -> bool:
+    try:
+        import fpylll  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+def gen_boneh_durfee(seed, generation, **kw):
+    import inspect
+
+    from . import lattice
+    rng = random.Random(f"bonehdurfee:{seed}:{generation}")
+    flag = _flag_for(seed)
+    m = bytes_to_long(flag.encode())
+    nbits = 512
+    while True:
+        p = _gen_prime(rng, nbits // 2)
+        q = _gen_prime(rng, nbits // 2)
+        if p == q:
+            continue
+        n = p * q
+        phi = (p - 1) * (q - 1)
+        d = _gen_prime(rng, int(nbits * 0.255))   # d ~ N^0.255, past Wiener's N^0.25
+        if phi % d == 0:
+            continue
+        try:
+            e = inverse(d, phi)
+            break
+        except ValueError:
+            continue
+    c = pow(m, e, n)
+    lattice_src = inspect.getsource(lattice)
+    solver = (
+        "from lattice import boneh_durfee\n"
+        "n=int(open('n.txt').read());e=int(open('e.txt').read());"
+        "c=int(open('c.txt').read())\n"
+        "res=boneh_durfee(n,e,delta=0.28,mm=5)\n"
+        "assert res, 'Boneh-Durfee failed (d not small enough)'\n"
+        "p,q=res;phi=(p-1)*(q-1);d=pow(e,-1,phi);m=pow(c,d,n)\n" + _TAIL)
+    art = {"n.txt": str(n), "e.txt": str(e), "c.txt": str(c),
+           "README.md": "# RSA\n\nDecryption is suspiciously fast. Recover the flag."}
+    return _spec(rank=6, challenge_type="rsa-boneh-durfee", attack_class="bonehdurfee",
+                 story="An RSA key uses a small private exponent — smaller than Wiener can reach.",
+                 vuln="small private exponent d < N^0.29 (Boneh-Durfee lattice attack)",
+                 solution=["build the Boneh-Durfee lattice", "LLL-reduce", "resultant -> factor N"],
+                 hints=["d is small but beyond Wiener's bound.", "Lattices (Coppersmith/Boneh-Durfee)."],
+                 artifacts=art, solver_src=solver, flag=flag,
+                 seed=seed, generation=generation,
+                 extra_solver_files={"lattice.py": lattice_src}, **kw)
+
+
 CRYPTO_LADDER = [gen_smalle, gen_hastad, gen_commonmod, gen_wiener_rung,
                  gen_fermat, gen_pollard]
 LADDER_NAMES = ["smalle", "hastad", "commonmod", "wiener", "fermat", "pollard"]
+if _fpylll_available():
+    CRYPTO_LADDER.append(gen_boneh_durfee)
+    LADDER_NAMES.append("bonehdurfee")
 
 
 def gen_crypto_ladder(*, seed: int, generation: int = 0,
