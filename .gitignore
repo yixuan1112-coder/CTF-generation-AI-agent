@@ -7,3 +7,5 @@ generated-*/
 exports/
 .env
 .ctf-agent/
+__pycache__/
+*.pyc
