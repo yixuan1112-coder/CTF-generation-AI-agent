@@ -177,5 +177,39 @@ class Step5RealBuildPipeline(unittest.TestCase):
             self.assertTrue(v.valid, v.reason)
 
 
+class Step6CryptoWiener(unittest.TestCase):
+    def test_wiener_attack_recovers_flag(self):
+        from autoctf_gan.crypto import gen_rsa_wiener
+        spec = gen_rsa_wiener(seed=1337, vulnerable=True)
+        v = verify_spec(spec)            # delivery=='crypto' -> real Wiener attack
+        self.assertTrue(v.valid, v.reason)
+        self.assertTrue(spec.verification.poc_passed)
+
+    def test_safe_key_is_rejected(self):
+        """P1 for crypto: remove the weakness -> attack fails -> spec rejected."""
+        from autoctf_gan.crypto import gen_rsa_wiener
+        safe = gen_rsa_wiener(seed=1337, vulnerable=False)
+        v = verify_spec(safe)
+        self.assertFalse(v.valid)
+
+    def test_flag_not_in_key_material(self):
+        from autoctf_gan.crypto import gen_rsa_wiener
+        spec = gen_rsa_wiener(seed=99, vulnerable=True)
+        self.assertFalse(any(spec.flag in v for v in spec.artifacts.values()))
+
+
+class Step7AttackDefenseArena(unittest.TestCase):
+    def test_ssti_arena_full_loop(self):
+        """attack steals flag -> patch blocks it -> normal traffic unaffected."""
+        from autoctf_gan.arena_bridge import run_ssti_arena
+        from autoctf_gan.web import gen_web_ssti
+        report = run_ssti_arena(gen_web_ssti(seed=7))
+        self.assertTrue(report["passed"], report)
+        self.assertTrue(report["rounds"][0]["vulnerable_service_compromised"])
+        self.assertTrue(report["rounds"][1]["exploit_blocked"])
+        self.assertTrue(report["rounds"][2]["vulnerable_ok"])
+        self.assertTrue(report["rounds"][2]["defended_ok"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

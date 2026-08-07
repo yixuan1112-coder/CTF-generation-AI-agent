@@ -111,6 +111,9 @@ def verify_spec(spec: ChallengeSpec) -> Verdict:
     if spec.delivery == "web":
         from .web import build_and_verify_web
         return build_and_verify_web(spec)
+    if spec.delivery == "crypto":
+        from .crypto import build_and_verify_crypto
+        return build_and_verify_crypto(spec)
     return _verify_codec(spec)
 
 

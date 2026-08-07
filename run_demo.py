@@ -47,6 +47,22 @@ def main() -> None:
                 print(f"  {e['gen']:>3} {e['depth']:>6} {e['solve_rate']*100:>6.1f}% "
                       f"{e['fitness']:>8}{flag}")
 
+    print("\nSTEP 6  REAL Crypto category — the PoC IS a Wiener attack")
+    from autoctf_gan.crypto import gen_rsa_wiener
+    vspec = gen_rsa_wiener(seed=1337, vulnerable=True)
+    vv = verify_spec(vspec)
+    print(f"  vulnerable (small d): valid={vv.valid}  attack_time={vv.poc_time_s:.3f}s")
+    sv = verify_spec(gen_rsa_wiener(seed=1337, vulnerable=False))
+    print(f"  safe key (weakness removed): valid={sv.valid}  <- rejected: attack can't run (P1)")
+
+    print("\nSTEP 7  Attack/Defense arena — live local Flask SSTI (no Docker)")
+    from autoctf_gan.arena_bridge import run_ssti_arena
+    from autoctf_gan.web import gen_web_ssti
+    rep = run_ssti_arena(gen_web_ssti(seed=7))
+    for rnd in rep["rounds"]:
+        print(f"  {rnd['agent']:9} {rnd['action']}")
+    print(f"  => passed={rep['passed']} score={rep['score']}")
+
     print("\nSTEP 4  run `python -m autoctf_gan.api` and open http://127.0.0.1:8080")
 
 

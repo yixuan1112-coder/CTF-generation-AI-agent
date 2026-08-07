@@ -8,10 +8,15 @@ from .models import ChallengeSpec, Verdict
 from .verify import verify_spec
 from .generator import GENERATOR_SYSTEM_PROMPT, generate_spec, offline_brain
 from .evolve import coevolve, fitness, mutate, AttackerPool, MUTATION_OPS
+from .native import gen_compiled_crackme
+from .crypto import gen_rsa_wiener
+from .web import gen_web_ssti
+from .arena_bridge import run_ssti_arena
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 __all__ = [
     "ChallengeSpec", "Verdict", "verify_spec", "GENERATOR_SYSTEM_PROMPT",
     "generate_spec", "offline_brain", "coevolve", "fitness", "mutate",
-    "AttackerPool", "MUTATION_OPS",
+    "AttackerPool", "MUTATION_OPS", "gen_compiled_crackme", "gen_rsa_wiener",
+    "gen_web_ssti", "run_ssti_arena",
 ]

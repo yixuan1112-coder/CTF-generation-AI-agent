@@ -42,7 +42,17 @@ python -m autoctf_gan.api --fastapi         # production app (pip install fastap
 |----------|---------|-------------|
 | `attachment` | subprocess codec | ✅ steps 1-4 |
 | `binary` | **gcc** compile + run + `strings` leak-gate | ✅ real binaries, obfuscation verified |
-| `web` | **Docker** build + run container + PoC | code complete; skips cleanly (no Docker in this env) |
+| `crypto` | **Wiener attack** PoC (pure Python) | ✅ recovers small-d RSA; safe key rejected |
+| `web` | **Docker** build + run container + PoC | code complete; skips cleanly (no Docker here) |
+
+### Attack/Defense arena (`arena_bridge.py`)
+
+`run_ssti_arena(spec)` runs the same 3-round attack/defend/judge protocol as
+`ctf_factory.arena.run_arena`, but against a **live local Flask server** instead
+of a Docker container — so the SSTI exploit and its defense are verified
+end-to-end even without Docker. Verified: attacker steals the flag → defender
+neutralizes the sink → the exploit is blocked and normal traffic is unaffected
+(score 100). Report shape matches the base arena for interchangeability.
 
 All three enforce the same invariant: **PoC must recover the exact flag, wrong
 inputs must not leak it, the flag must not appear in player artifacts.**
