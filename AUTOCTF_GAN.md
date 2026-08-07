@@ -43,7 +43,19 @@ python -m autoctf_gan.api --fastapi         # production app (pip install fastap
 | `attachment` | subprocess codec | ✅ steps 1-4 |
 | `binary` | **gcc** compile + run + `strings` leak-gate | ✅ real binaries, obfuscation verified |
 | `crypto` | **Wiener attack** PoC (pure Python) | ✅ recovers small-d RSA; safe key rejected |
+| `crypto` ladder | **5 attack classes** rotating by generation | ✅ each rung a verified attack; co-evolves to elite |
 | `web` | **Docker** build + run container + PoC | code complete; skips cleanly (no Docker here) |
+
+### Crypto co-evolution ladder (`crypto_ladder.py`)
+
+Crypto difficulty escalates by rotating the **attack class** each generation —
+never by enlarging the modulus (that would be entropy growth). Five real,
+self-contained PoCs form the ladder: small-`e` cube root → Håstad broadcast (CRT)
+→ common modulus (Bézout) → Wiener → Fermat. Every rung is verified by
+`verify_spec`; the attacker pool models rising field difficulty via the rung
+index, so the archetype co-evolves to the elite band at the Fermat rung
+(~5% solve), exactly like the `reverse` rounds ladder. Removing the weakness at
+any rung makes that rung's attack fail → the spec is rejected (P1).
 
 ### Attack/Defense arena (`arena_bridge.py`)
 

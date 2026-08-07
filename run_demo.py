@@ -55,6 +55,19 @@ def main() -> None:
     sv = verify_spec(gen_rsa_wiener(seed=1337, vulnerable=False))
     print(f"  safe key (weakness removed): valid={sv.valid}  <- rejected: attack can't run (P1)")
 
+    print("\nSTEP 6b  Crypto co-evolution — attack-CLASS ladder (each rung a real attack)")
+    from autoctf_gan.tournament import TournamentConfig, run_tournament_events
+    cfg = TournamentConfig(category="crypto", archetype_id="crypto.ladder",
+                           seed=20250807, max_generations=6)
+    names = {}
+    for e in run_tournament_events(cfg):
+        if e["evt"] == "verify.verdict" and e["valid"]:
+            names[e["spec_id"]] = e["spec_id"].split("-")[1]
+        if e["evt"] == "gen.scored":
+            star = " <-- ELITE" if e["elite"] else ""
+            print(f"  gen {e['gen']}  {names.get(e['spec_id'],'?'):>10}  "
+                  f"solve {e['solve_rate']*100:5.1f}%  fitness {e['fitness']}{star}")
+
     print("\nSTEP 7  Attack/Defense arena — live local Flask SSTI (no Docker)")
     from autoctf_gan.arena_bridge import run_ssti_arena
     from autoctf_gan.web import gen_web_ssti

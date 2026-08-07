@@ -211,5 +211,32 @@ class Step7AttackDefenseArena(unittest.TestCase):
         self.assertTrue(report["rounds"][2]["defended_ok"])
 
 
+class Step8CryptoLadder(unittest.TestCase):
+    def test_every_rung_has_a_verified_attack(self):
+        from autoctf_gan.crypto_ladder import LADDER_NAMES, gen_crypto_ladder
+        for gen, name in enumerate(LADDER_NAMES):
+            spec = gen_crypto_ladder(seed=20250807, generation=gen)
+            self.assertEqual(spec.mechanics["attack_class"], name)
+            self.assertEqual(spec.intended_depth, gen + 1)   # rank+1 drives the pool curve
+            self.assertTrue(verify_spec(spec).valid, f"{name} PoC failed")
+
+    def test_mutation_rotates_attack_class(self):
+        from autoctf_gan.crypto_ladder import gen_crypto_ladder, mutate_crypto
+        parent = gen_crypto_ladder(seed=1, generation=0)
+        child = mutate_crypto(parent)
+        self.assertEqual(child.lineage.generation, 1)
+        self.assertNotEqual(child.mechanics["attack_class"],
+                            parent.mechanics["attack_class"])
+        self.assertTrue(verify_spec(child).valid)
+
+    def test_ladder_coevolves_to_elite(self):
+        from autoctf_gan.tournament import TournamentConfig, run_tournament_events
+        events = list(run_tournament_events(
+            TournamentConfig(category="crypto", archetype_id="crypto.ladder",
+                             seed=20250807, max_generations=6, pool_size=300)))
+        self.assertTrue(all(e["valid"] for e in events if e["evt"] == "verify.verdict"))
+        self.assertTrue(any(e["evt"] == "archetype.promoted" for e in events))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

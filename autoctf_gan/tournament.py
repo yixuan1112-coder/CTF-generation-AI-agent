@@ -40,9 +40,12 @@ def run_tournament_events(cfg: TournamentConfig) -> Iterator[dict[str, Any]]:
     yield event("tournament.start", archetype=cfg.archetype_id,
                 category=cfg.category, max_generations=cfg.max_generations)
 
-    # Category dispatch: the 'reverse' archetype uses the REAL gcc-compiled
-    # crackme category (native.py); everything else uses the codec substrate.
+    # Category dispatch:
+    #   reverse -> REAL gcc-compiled crackme (native.py), difficulty = key rounds
+    #   crypto  -> REAL attack-class ladder (crypto_ladder.py), difficulty = rung
+    #   else    -> codec substrate
     native = cfg.category == "reverse"
+    crypto = cfg.category == "crypto"
     if native:
         from .native import gcc_available, gen_compiled_crackme, mutate_native
         if not gcc_available():
@@ -51,6 +54,10 @@ def run_tournament_events(cfg: TournamentConfig) -> Iterator[dict[str, Any]]:
             return
         spec = gen_compiled_crackme(seed=cfg.seed, archetype_id=cfg.archetype_id, rounds=1)
         source = "native-gcc"
+    elif crypto:
+        from .crypto_ladder import gen_crypto_ladder, mutate_crypto
+        spec = gen_crypto_ladder(seed=cfg.seed, generation=0, archetype_id=cfg.archetype_id)
+        source = "crypto-ladder"
     else:
         spec, source = generate_spec(category=cfg.category, challenge_type=cfg.challenge_type,
                                      difficulty="easy", seed=cfg.seed, archetype_id=cfg.archetype_id)
@@ -99,7 +106,13 @@ def run_tournament_events(cfg: TournamentConfig) -> Iterator[dict[str, Any]]:
 
         sigs = ["fast_solve"] if rate > ELITE_BAND[1] else []
         prev_gen = spec.lineage.generation
-        spec = mutate_native(spec) if native else mutate(spec, sigs, rng)
+        if native:
+            spec = mutate_native(spec)
+        elif crypto:
+            from .crypto_ladder import mutate_crypto
+            spec = mutate_crypto(spec)
+        else:
+            spec = mutate(spec, sigs, rng)
         yield event("gen.advanced", archetype=cfg.archetype_id,
                     gen=spec.lineage.generation, reason=("sig:fast_solve" if sigs else "explore"),
                     prev_gen=prev_gen)
