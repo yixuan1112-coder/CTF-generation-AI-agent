@@ -20,6 +20,7 @@ from pathlib import Path
 from .tournament import TournamentConfig, run_tournament_events
 
 DASHBOARD = Path(__file__).with_name("dashboard.html")
+CONSOLE = Path(__file__).with_name("console.html")
 
 
 # ---------------------------------------------------------------------------
@@ -84,8 +85,22 @@ def serve_stdlib(port: int = 8080, cfg: TournamentConfig | None = None) -> None:
         def log_message(self, *a):  # quiet
             pass
 
+        def _send(self, code, ctype, body, extra=None):
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            for k, v in (extra or {}).items():
+                self.send_header(k, v)
+            self.end_headers()
+            self.wfile.write(body if isinstance(body, bytes) else body.encode())
+
         def do_GET(self):
-            if self.path.startswith("/events"):
+            from urllib.parse import parse_qs, urlparse
+
+            from . import console
+            parsed = urlparse(self.path)
+            path, qs = parsed.path, parse_qs(parsed.query)
+
+            if path.startswith("/events"):
                 self.send_response(200)
                 self.send_header("Content-Type", "text/event-stream")
                 self.send_header("Cache-Control", "no-cache")
@@ -98,11 +113,30 @@ def serve_stdlib(port: int = 8080, cfg: TournamentConfig | None = None) -> None:
                         return
                 self.wfile.write(b"data: {\"evt\": \"stream.end\"}\n\n")
                 return
-            body = DASHBOARD.read_text(encoding="utf-8").encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html")
-            self.end_headers()
-            self.wfile.write(body)
+
+            if path == "/console":
+                return self._send(200, "text/html", CONSOLE.read_text(encoding="utf-8"))
+            if path == "/api/menu":
+                return self._send(200, "application/json", json.dumps(console.menu()))
+            if path == "/api/generate":
+                try:
+                    data = console.generate_challenge(
+                        qs.get("option", ["misc:easy"])[0],
+                        int(qs.get("seed", ["1234"])[0]),
+                        qs.get("verify", ["false"])[0] == "true")
+                    return self._send(200, "application/json", json.dumps(data))
+                except Exception as exc:
+                    return self._send(200, "application/json", json.dumps({"error": str(exc)}))
+            if path == "/api/download":
+                try:
+                    name, blob = console.challenge_zip(
+                        qs.get("option", ["misc:easy"])[0], int(qs.get("seed", ["1234"])[0]))
+                    return self._send(200, "application/zip", blob,
+                                      {"Content-Disposition": f'attachment; filename="{name}"'})
+                except Exception as exc:
+                    return self._send(200, "application/json", json.dumps({"error": str(exc)}))
+
+            self._send(200, "text/html", DASHBOARD.read_text(encoding="utf-8"))
 
     with socketserver.ThreadingTCPServer(("127.0.0.1", port), Handler) as httpd:
         print(f"AutoCTF-GAN dashboard: http://127.0.0.1:{port}  (Ctrl-C to stop)")

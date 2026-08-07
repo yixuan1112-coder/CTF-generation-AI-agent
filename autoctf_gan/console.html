@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>AutoCTF-GAN — Challenge Console</title>
+<style>
+  :root { --bg:#0d1117; --panel:#161b22; --line:#30363d; --fg:#c9d1d9; --dim:#8b949e;
+          --accent:#58a6ff; --ok:#3fb950; --bad:#f85149; --warn:#d29922; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;
+         background:var(--bg); color:var(--fg); }
+  header { padding:16px 22px; border-bottom:1px solid var(--line); }
+  header h1 { margin:0; font-size:17px; }
+  header p { margin:6px 0 0; color:var(--dim); }
+  header a { color:var(--accent); }
+  .wrap { max-width:980px; margin:0 auto; padding:20px; }
+  .controls { display:flex; flex-wrap:wrap; gap:12px; align-items:end;
+              background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:16px; }
+  label { display:block; font-size:12px; color:var(--dim); margin-bottom:5px; text-transform:uppercase; letter-spacing:.5px; }
+  select,input { background:#0d1117; color:var(--fg); border:1px solid var(--line);
+                 border-radius:6px; padding:8px 10px; font:inherit; }
+  select { min-width:280px; }
+  input[type=number] { width:110px; }
+  button { background:var(--accent); color:#0d1117; border:0; border-radius:6px;
+           padding:9px 16px; font:inherit; font-weight:bold; cursor:pointer; }
+  button.ghost { background:transparent; color:var(--accent); border:1px solid var(--accent); }
+  button:disabled { opacity:.5; cursor:default; }
+  .chk { display:flex; align-items:center; gap:6px; color:var(--dim); font-size:13px; }
+  .out { margin-top:18px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:16px; margin-bottom:14px; }
+  .card h2 { margin:0 0 10px; font-size:13px; text-transform:uppercase; letter-spacing:1px; color:var(--dim); }
+  .meta b { color:var(--fg); } .meta span { color:var(--dim); }
+  .pill { padding:2px 9px; border-radius:11px; font-size:12px; }
+  .pill.ok { background:#0f2f1a; color:var(--ok); } .pill.bad { background:#3a1414; color:var(--bad); }
+  .pill.na { background:#21262d; color:var(--dim); }
+  pre { background:#0d1117; border:1px solid var(--line); border-radius:6px; padding:12px;
+        overflow:auto; max-height:280px; margin:8px 0 0; }
+  .file { margin-bottom:10px; }
+  .file .name { color:var(--accent); }
+  .flag { font-size:16px; color:var(--ok); }
+  .hidden { display:none; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+  .muted { color:var(--dim); }
+  .spin { color:var(--warn); }
+</style>
+</head>
+<body>
+<header>
+  <h1>🛠️ AutoCTF-GAN — Challenge Console</h1>
+  <p>Generate a ready-to-run CTF challenge. Every challenge ships with a paired
+     solver — tick <b>Verify solvable</b> to prove it before handing it out.
+     Live dashboard: <a href="/">Evolution view →</a></p>
+</header>
+
+<div class="wrap">
+  <div class="controls">
+    <div>
+      <label>Challenge</label>
+      <select id="option"></select>
+    </div>
+    <div>
+      <label>Seed</label>
+      <input type="number" id="seed" value="1234"/>
+    </div>
+    <label class="chk"><input type="checkbox" id="verify"/> Verify solvable (slower)</label>
+    <button id="gen">Generate</button>
+    <button id="dl" class="ghost">Download player ZIP</button>
+    <span id="status" class="muted"></span>
+  </div>
+
+  <div class="out hidden" id="out">
+    <div class="card">
+      <h2>Challenge</h2>
+      <div class="meta row">
+        <b id="m-title"></b>
+        <span id="m-cat"></span>
+        <span>attack: <b id="m-attack"></b></span>
+        <span>difficulty: <b id="m-diff"></b></span>
+        <span id="m-verify" class="pill na">not verified</span>
+      </div>
+      <p class="muted" id="m-story" style="margin:10px 0 0;"></p>
+    </div>
+
+    <div class="card">
+      <h2>Player files <span class="muted">(hand these out)</span></h2>
+      <div id="player"></div>
+    </div>
+
+    <div class="card">
+      <h2>Organizer only</h2>
+      <div class="row">
+        <span>Flag:</span>
+        <span id="flag" class="flag">••••••••</span>
+        <button class="ghost" id="reveal">Reveal flag</button>
+      </div>
+      <div style="margin-top:12px;">
+        <span class="muted">Official solver (the paired PoC):</span>
+        <div id="solver"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+let current = null;
+
+async function loadMenu(){
+  const r = await fetch('/api/menu'); const items = await r.json();
+  $('#option').innerHTML = items.map(o=>`<option value="${o.id}">${o.label}</option>`).join('');
+}
+
+function fileBlock(files){
+  return Object.entries(files).map(([name,content])=>`
+    <div class="file"><div class="name">${name}</div>
+    <pre>${escapeHtml(content.length>4000?content.slice(0,4000)+'\n…(truncated)':content)}</pre></div>`).join('');
+}
+function escapeHtml(s){ return s.replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+
+async function generate(){
+  const id=$('#option').value, seed=$('#seed').value, verify=$('#verify').checked;
+  $('#status').innerHTML = verify ? '<span class="spin">generating + verifying…</span>' : 'generating…';
+  $('#gen').disabled=true;
+  try{
+    const r = await fetch(`/api/generate?option=${encodeURIComponent(id)}&seed=${seed}&verify=${verify}`);
+    const d = await r.json();
+    if(d.error){ $('#status').textContent='error: '+d.error; return; }
+    current=d;
+    $('#out').classList.remove('hidden');
+    $('#m-title').textContent=d.title;
+    $('#m-cat').textContent=d.category;
+    $('#m-attack').textContent=d.attack;
+    $('#m-diff').textContent=d.difficulty;
+    $('#m-story').textContent=d.story;
+    const vp=$('#m-verify');
+    if(d.verified===null){ vp.className='pill na'; vp.textContent='not verified'; }
+    else if(d.verified){ vp.className='pill ok'; vp.textContent=`✔ solvable${d.verify_time_s?` (${d.verify_time_s.toFixed(2)}s)`:''}`; }
+    else { vp.className='pill bad'; vp.textContent='✘ '+(d.verify_reason||'rejected'); }
+    $('#player').innerHTML=fileBlock(d.player_files);
+    $('#solver').innerHTML=fileBlock(d.solver_files);
+    $('#flag').textContent='••••••••'; $('#flag').dataset.v=d.flag;
+    $('#status').textContent='done';
+  }catch(e){ $('#status').textContent='error: '+e; }
+  finally{ $('#gen').disabled=false; }
+}
+
+$('#gen').onclick=generate;
+$('#reveal').onclick=()=>{ const f=$('#flag'); f.textContent = f.textContent.startsWith('•')?f.dataset.v:'••••••••'; };
+$('#dl').onclick=()=>{ const id=$('#option').value, seed=$('#seed').value;
+  window.location=`/api/download?option=${encodeURIComponent(id)}&seed=${seed}`; };
+loadMenu();
+</script>
+</body>
+</html>
