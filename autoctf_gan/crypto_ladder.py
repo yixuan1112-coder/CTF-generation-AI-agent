@@ -247,8 +247,58 @@ def gen_fermat(seed, generation, **kw):
                  artifacts=art, solver_src=solver, flag=flag, seed=seed, generation=generation, **kw)
 
 
-CRYPTO_LADDER = [gen_smalle, gen_hastad, gen_commonmod, gen_wiener_rung, gen_fermat]
-LADDER_NAMES = ["smalle", "hastad", "commonmod", "wiener", "fermat"]
+# --- rank 5: Pollard p-1 (smooth p-1) --------------------------------------
+def _smooth_prime(rng, bits, B):
+    small = [i for i in range(2, B) if isPrime(i)]
+    while True:
+        m = 1
+        while m.bit_length() < bits - 1:
+            m *= rng.choice(small)
+        p = m + 1
+        if p.bit_length() == bits and isPrime(p):
+            return p
+
+
+def gen_pollard(seed, generation, **kw):
+    rng = random.Random(f"pollard:{seed}:{generation}")
+    flag = _flag_for(seed)
+    m = bytes_to_long(flag.encode())
+    e = 65537
+    B = 150
+    while True:
+        p = _smooth_prime(rng, 256, B)   # p-1 is B-smooth -> Pollard p-1 works
+        q = _gen_prime(rng, 256)
+        phi = (p - 1) * (q - 1)
+        if phi % e:
+            break
+    n = p * q
+    c = pow(m, e, n)
+    solver = (
+        "import math\n"
+        "n=int(open('n.txt').read());e=int(open('e.txt').read());"
+        "c=int(open('c.txt').read())\n"
+        "def pollard(N,B=4000):\n"
+        "    a=2\n"
+        "    for j in range(2,B):\n"
+        "        a=pow(a,j,N);d=math.gcd(a-1,N)\n"
+        "        if 1<d<N: return d\n"
+        "    return None\n"
+        "p=pollard(n)\nassert p and n%p==0, 'pollard p-1 failed (p-1 not smooth)'\n"
+        "q=n//p;phi=(p-1)*(q-1);d=pow(e,-1,phi);m=pow(c,d,n)\n" + _TAIL)
+    art = {"n.txt": str(n), "e.txt": str(e), "c.txt": str(c),
+           "README.md": "# RSA\n\nStandard-looking key. One prime was chosen unwisely."}
+    return _spec(rank=5, challenge_type="rsa-pollard", attack_class="pollard",
+                 story="An RSA prime was generated so that p-1 has only small factors.",
+                 vuln="smooth p-1 (Pollard's p-1 factorization)",
+                 solution=["a = 2^(k!) mod n", "gcd(a-1, n) reveals a factor"],
+                 hints=["One prime is 'smooth minus one'.", "Pollard's p-1."],
+                 artifacts=art, solver_src=solver, flag=flag,
+                 seed=seed, generation=generation, **kw)
+
+
+CRYPTO_LADDER = [gen_smalle, gen_hastad, gen_commonmod, gen_wiener_rung,
+                 gen_fermat, gen_pollard]
+LADDER_NAMES = ["smalle", "hastad", "commonmod", "wiener", "fermat", "pollard"]
 
 
 def gen_crypto_ladder(*, seed: int, generation: int = 0,

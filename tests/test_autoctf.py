@@ -165,16 +165,12 @@ class Step5RealBuildPipeline(unittest.TestCase):
         v = verify_spec(spec)
         self.assertFalse(v.valid)
 
-    def test_web_ssti_spec_valid_or_docker_skipped(self):
-        from autoctf_gan.web import docker_available, gen_web_ssti
+    def test_web_ssti_verifies_live(self):
+        """Docker or not, the SSTI PoC is checked against a live server."""
+        from autoctf_gan.web import gen_web_ssti
         spec = gen_web_ssti(seed=7)
         self.assertEqual(spec.delivery, "web")
-        v = verify_spec(spec)
-        if not docker_available():
-            self.assertFalse(v.valid)
-            self.assertIn("docker", v.reason.lower())   # graceful skip, no crash
-        else:
-            self.assertTrue(v.valid, v.reason)
+        self.assertTrue(verify_spec(spec).valid)   # local flask fallback here
 
 
 class Step6CryptoWiener(unittest.TestCase):
@@ -210,6 +206,17 @@ class Step7AttackDefenseArena(unittest.TestCase):
         self.assertTrue(report["rounds"][2]["vulnerable_ok"])
         self.assertTrue(report["rounds"][2]["defended_ok"])
 
+    def test_web_denylist_coevolves(self):
+        """Each generation bans the prior bypass token; the PoC still evades live."""
+        from autoctf_gan.web import MAX_WEB_GEN, deny_for, gen_web_ssti, mutate_web
+        spec = gen_web_ssti(seed=7, generation=0)
+        for _ in range(MAX_WEB_GEN):
+            child = mutate_web(spec)
+            self.assertGreater(len(deny_for(child.lineage.generation)),
+                               len(deny_for(spec.lineage.generation)))
+            self.assertTrue(verify_spec(child).valid, child.mechanics)
+            spec = child
+
 
 class Step8CryptoLadder(unittest.TestCase):
     def test_every_rung_has_a_verified_attack(self):
@@ -236,6 +243,26 @@ class Step8CryptoLadder(unittest.TestCase):
                              seed=20250807, max_generations=6, pool_size=300)))
         self.assertTrue(all(e["valid"] for e in events if e["evt"] == "verify.verdict"))
         self.assertTrue(any(e["evt"] == "archetype.promoted" for e in events))
+
+    def test_pollard_rung_verifies(self):
+        from autoctf_gan.crypto_ladder import gen_crypto_ladder
+        spec = gen_crypto_ladder(seed=20250807, generation=5)
+        self.assertEqual(spec.mechanics["attack_class"], "pollard")
+        self.assertTrue(verify_spec(spec).valid)
+
+
+class Step9Lattice(unittest.TestCase):
+    def test_lll_reduces_known_basis(self):
+        from autoctf_gan.lattice import lll
+        red = lll([[1, 1, 1], [-1, 0, 2], [3, 5, 6]])
+        # every reduced row is shorter than the longest original row
+        self.assertTrue(all(sum(x * x for x in r) <= 14 for r in red))
+
+    def test_boneh_durfee_is_honestly_gated(self):
+        """We do not ship a lattice attack that can't actually run (P1)."""
+        from autoctf_gan.lattice import boneh_durfee
+        with self.assertRaises(NotImplementedError):
+            boneh_durfee(N=91, e=5)
 
 
 if __name__ == "__main__":

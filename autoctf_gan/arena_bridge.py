@@ -16,54 +16,21 @@ Rounds:
 """
 from __future__ import annotations
 
-import os
 import re
-import socket
 import subprocess
 import sys
-import time
 from pathlib import Path
 
-import urllib.request
-
+from .localserve import free_port as _free_port
+from .localserve import http as _http
+from .localserve import serve_flask as _serve
 from .models import ChallengeSpec
 
 # Canonical SSTI fix: stop evaluating user input as a template. The greeting
 # still renders; the injection no longer does.
-_VULN_SINK = 'return Template("Hello " + name + "!").render(flag=FLAG)'
+_VULN_SINK = 'return Template("Hello " + name + "!").render(ctx=CTX)   # SSTI sink'
 _SAFE_SINK = ('from markupsafe import escape\n'
               '    return "Hello " + str(escape(name)) + "!"  # SSTI_SINK_NEUTRALIZED')
-
-
-def _free_port() -> int:
-    s = socket.socket()
-    s.bind(("127.0.0.1", 0))
-    port = s.getsockname()[1]
-    s.close()
-    return port
-
-
-def _http(url: str, timeout: float = 5.0) -> str:
-    try:
-        with urllib.request.urlopen(url, timeout=timeout) as r:
-            return r.read().decode(errors="replace")
-    except urllib.error.HTTPError as exc:
-        return exc.read().decode(errors="replace")
-
-
-def _serve(app_path: Path, flag: str, port: int) -> subprocess.Popen:
-    env = {**os.environ, "FLAG": flag, "PORT": str(port)}
-    proc = subprocess.Popen([sys.executable, str(app_path)], env=env,
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    base = f"http://127.0.0.1:{port}"
-    for _ in range(40):
-        try:
-            _http(base + "/?name=ready")
-            return proc
-        except OSError:
-            time.sleep(0.15)
-    proc.terminate()
-    raise RuntimeError("flask app did not become ready")
 
 
 def _attack(base: str, solver: str, root: Path, expected_flag: str) -> bool:

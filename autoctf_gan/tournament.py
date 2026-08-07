@@ -46,6 +46,7 @@ def run_tournament_events(cfg: TournamentConfig) -> Iterator[dict[str, Any]]:
     #   else    -> codec substrate
     native = cfg.category == "reverse"
     crypto = cfg.category == "crypto"
+    web = cfg.category == "web" and cfg.challenge_type == "ssti"
     if native:
         from .native import gcc_available, gen_compiled_crackme, mutate_native
         if not gcc_available():
@@ -58,6 +59,10 @@ def run_tournament_events(cfg: TournamentConfig) -> Iterator[dict[str, Any]]:
         from .crypto_ladder import gen_crypto_ladder, mutate_crypto
         spec = gen_crypto_ladder(seed=cfg.seed, generation=0, archetype_id=cfg.archetype_id)
         source = "crypto-ladder"
+    elif web:
+        from .web import gen_web_ssti, mutate_web
+        spec = gen_web_ssti(seed=cfg.seed, generation=0, archetype_id=cfg.archetype_id)
+        source = "web-ssti"
     else:
         spec, source = generate_spec(category=cfg.category, challenge_type=cfg.challenge_type,
                                      difficulty="easy", seed=cfg.seed, archetype_id=cfg.archetype_id)
@@ -111,6 +116,9 @@ def run_tournament_events(cfg: TournamentConfig) -> Iterator[dict[str, Any]]:
         elif crypto:
             from .crypto_ladder import mutate_crypto
             spec = mutate_crypto(spec)
+        elif web:
+            from .web import mutate_web
+            spec = mutate_web(spec)
         else:
             spec = mutate(spec, sigs, rng)
         yield event("gen.advanced", archetype=cfg.archetype_id,
