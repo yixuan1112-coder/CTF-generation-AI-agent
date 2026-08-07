@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>AutoCTF-GAN — Live Evolution</title>
+<style>
+  :root { --bg:#0d1117; --panel:#161b22; --line:#30363d; --fg:#c9d1d9; --dim:#8b949e;
+          --accent:#58a6ff; --elite:#3fb950; --bad:#f85149; --warn:#d29922; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;
+         background:var(--bg); color:var(--fg); }
+  header { padding:14px 20px; border-bottom:1px solid var(--line); display:flex;
+           align-items:center; gap:14px; }
+  header h1 { font-size:16px; margin:0; letter-spacing:.5px; }
+  #gen { color:var(--accent); font-weight:bold; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; padding:14px; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px;
+           padding:14px; min-height:220px; overflow:auto; }
+  .panel.wide { grid-column:1 / -1; }
+  .panel h2 { font-size:12px; text-transform:uppercase; letter-spacing:1px;
+              color:var(--dim); margin:0 0 12px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th,td { text-align:left; padding:5px 8px; border-bottom:1px solid var(--line); }
+  th { color:var(--dim); font-weight:normal; }
+  .elite { color:var(--elite); font-weight:bold; }
+  .bad { color:var(--bad); }
+  .bar { height:8px; background:#21262d; border-radius:4px; overflow:hidden; }
+  .bar > i { display:block; height:100%; background:var(--accent); }
+  .heat { display:inline-block; width:14px; height:14px; border-radius:3px;
+          vertical-align:middle; }
+  #log { font-size:12px; white-space:pre-wrap; max-height:320px; }
+  .log-line { padding:2px 0; border-bottom:1px dotted #21262d; }
+  .k { color:var(--accent); } .v { color:var(--fg); } .muted { color:var(--dim); }
+  .pill { padding:1px 7px; border-radius:10px; font-size:11px; }
+  .pill.up { background:#132e1c; color:var(--elite); }
+  .pill.down { background:#3a1414; color:var(--bad); }
+  #cards .card { display:flex; justify-content:space-between; padding:6px 8px;
+                 border:1px solid var(--line); border-radius:6px; margin-bottom:6px; }
+  .live { color:var(--elite); } .dead { color:var(--dim); text-decoration:line-through; }
+</style>
+</head>
+<body>
+<header>
+  <h1>⚔️ AutoCTF-GAN</h1>
+  <span class="muted">archetype</span> <span id="arch">—</span>
+  <span class="muted">|</span> <span class="muted">generation</span> <span id="gen">Gen-0</span>
+  <span class="muted">|</span> <span id="status" class="muted">connecting…</span>
+</header>
+
+<div class="grid">
+  <!-- ① Evolution Matrix -->
+  <section class="panel" id="matrix">
+    <h2>① Evolution Matrix</h2>
+    <table>
+      <thead><tr><th>Gen</th><th>Depth</th><th>Solve rate</th><th></th><th>Fitness</th><th>Complexity</th></tr></thead>
+      <tbody id="matrix-rows"></tbody>
+    </table>
+  </section>
+
+  <!-- ③ Sandbox Manager -->
+  <section class="panel" id="sandbox">
+    <h2>③ Challenge Sandbox Manager</h2>
+    <div id="cards"></div>
+  </section>
+
+  <!-- ② Agent Battle Arena -->
+  <section class="panel wide" id="arena">
+    <h2>② Agent Battle Arena — thought · action · observation</h2>
+    <div id="log"></div>
+  </section>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const rows = {};           // gen -> <tr>
+const containers = {};     // spec_id -> card
+function heatColor(c){ const h=(1-c)*140; return `hsl(${h},60%,45%)`; }
+
+function logLine(html){
+  const d=document.createElement('div'); d.className='log-line'; d.innerHTML=html;
+  const log=$('#log'); log.prepend(d);
+  while(log.children.length>120) log.removeChild(log.lastChild);
+}
+
+function upsertRow(g){
+  let tr=rows[g.gen];
+  if(!tr){ tr=document.createElement('tr'); rows[g.gen]=tr; $('#matrix-rows').appendChild(tr); }
+  const eliteCls=g.elite?'elite':'';
+  const complexity=g.heatmap?g.heatmap.complexity:Math.min(1,g.depth/6);
+  tr.innerHTML=`<td>Gen-${g.gen}</td><td>${g.depth}</td>
+    <td class="${eliteCls}">${(g.solve_rate*100).toFixed(1)}%</td>
+    <td><div class="bar"><i style="width:${Math.min(100,g.solve_rate*100)}%;
+        background:${g.elite?'var(--elite)':'var(--accent)'}"></i></div></td>
+    <td class="${g.fitness<0?'bad':''}">${g.fitness}</td>
+    <td><span class="heat" style="background:${heatColor(complexity)}"></span> ${complexity}</td>`;
+}
+
+const H={
+  'tournament.start': e=>{ $('#arch').textContent=e.archetype; $('#status').textContent='running';
+      logLine(`<span class="k">▶ tournament</span> ${e.archetype} · up to Gen-${e.max_generations}`); },
+  'challenge.generated': e=>logLine(`<span class="k">✎ generated</span> ${e.spec_id} <span class="muted">via ${e.source} brain, depth ${e.depth}</span>`),
+  'container.spawn': e=>{ containers[e.spec_id]={gen:e.gen}; renderCards();
+      logLine(`<span class="muted">⬡ spawn</span> ${e.image} <span class="muted">(Gen-${e.gen})</span>`); },
+  'verify.verdict': e=>{ const ok=e.valid;
+      logLine(`<span class="${ok?'k':'bad'}">${ok?'✔ verify':'✘ verify'}</span> ${e.spec_id} — ${ok?('PoC '+ (e.poc_time_s? e.poc_time_s.toFixed(3)+'s':'')+' · '+e.checks.join(', ')):e.reason}`); },
+  'gen.rejected': e=>logLine(`<span class="bad">⟲ rejected</span> ${e.spec_id} — ${e.reason} (re-mutating)`),
+  'solverate.tick': e=>{ $('#gen').textContent='Gen-'+e.gen; },
+  'exploit.result': e=>logLine(`<span class="v">🚩 ${e.team}</span> solved <span class="muted">${e.spec_id}</span> in ${e.time_s}s <span class="muted">(Gen-${e.gen})</span>`),
+  'gen.scored': e=>{ upsertRow(e);
+      logLine(`<span class="k">Σ scored</span> Gen-${e.gen} depth ${e.depth} · solve ${(e.solve_rate*100).toFixed(1)}% · fitness ${e.fitness} ${e.elite?'<span class="pill up">ELITE</span>':''}`); },
+  'archetype.promoted': e=>logLine(`<span class="elite">★ promoted</span> ${e.spec_id} to elite archive (Gen-${e.gen})`),
+  'container.destroy': e=>{ if(containers[e.spec_id]) containers[e.spec_id].dead=true; renderCards(); },
+  'gen.advanced': e=>{ $('#gen').textContent='Gen-'+e.gen;
+      logLine(`<span class="muted">↳ advanced</span> to Gen-${e.gen} <span class="muted">(${e.reason})</span>`); },
+  'tournament.end': e=>{ $('#status').textContent=`done · ${e.elites} elite (best Gen-${e.best_gen})`;
+      logLine(`<span class="k">■ end</span> ${e.elites} elite archetype(s), best Gen-${e.best_gen}`); },
+  'stream.end': ()=>{ $('#status').textContent+=' · stream closed'; },
+};
+
+function renderCards(){
+  const c=$('#cards'); c.innerHTML='';
+  Object.entries(containers).slice(-8).forEach(([id,st])=>{
+    const d=document.createElement('div'); d.className='card';
+    d.innerHTML=`<span class="${st.dead?'dead':'live'}">${st.dead?'◍':'◉'} ${id}</span>
+                 <span class="muted">Gen-${st.gen} ${st.dead?'destroyed':'running'}</span>`;
+    c.appendChild(d);
+  });
+}
+
+const es=new EventSource('/events');
+es.onmessage=ev=>{ const e=JSON.parse(ev.data); (H[e.evt]||(()=>{}))(e); };
+es.onerror=()=>{ $('#status').textContent='stream error / closed'; es.close(); };
+</script>
+</body>
+</html>
