@@ -88,7 +88,7 @@ class Competition:
     def register(self, name: str) -> dict:
         with self.lock:
             tid = secrets.token_hex(4)
-            self.teams[tid] = {"name": name, "score": 0, "solves": 0}
+            self.teams[tid] = {"name": name, "score": 0, "solves": 0, "best_gen": -1}
             self._log("team.registered", team=name, team_id=tid)
             return {"team_id": tid, "name": name}
 
@@ -121,6 +121,7 @@ class Competition:
             self.solvers_of_current.add(team_id)
             self.teams[team_id]["score"] += pts
             self.teams[team_id]["solves"] += 1
+            self.teams[team_id]["best_gen"] = self.gen
             self._log("solve", team=self.teams[team_id]["name"], gen=self.gen,
                       points=pts, first_blood=first)
 
@@ -156,6 +157,54 @@ class Competition:
                     "challenge_id": self.spec.spec_id, "attack": self._attack(),
                     "solvers_of_current": len(self.solvers_of_current),
                     "teams": len(self.teams)}
+
+
+class CompetitionHost:
+    """Gives each registered team its OWN evolving challenge-maker instance.
+
+    This is the model for "upload your agent and see how far it gets": your solves
+    evolve *your* agent only, so your test is independent and reproducible. The
+    highest generation you *solve* is your result; whoever's agent out-evolves
+    their team the least (i.e. the team that climbs highest) leads the board.
+    """
+
+    def __init__(self, category: str = "crypto", seed: int = 1234, max_gen: int = 6):
+        self.category, self.seed, self.max_gen = category, seed, max_gen
+        self.lock = threading.RLock()
+        self._teams: dict[str, dict] = {}
+
+    def register(self, name: str) -> dict:
+        with self.lock:
+            comp = Competition(self.category, self.seed, evolve_on=1, max_gen=self.max_gen)
+            inner = comp.register(name)["team_id"]
+            tid = secrets.token_hex(4)
+            self._teams[tid] = {"name": name, "comp": comp, "inner": inner}
+            return {"team_id": tid, "name": name, "server": "connect your agent to /comp/*"}
+
+    def challenge(self, tid: str) -> dict:
+        t = self._teams.get(tid)
+        return t["comp"].current() if t else {"error": "unknown team — register first"}
+
+    def submit(self, tid: str, cid: str, flag: str) -> dict:
+        t = self._teams.get(tid)
+        if not t:
+            return {"ok": False, "msg": "unknown team — register first"}
+        return t["comp"].submit(t["inner"], cid, flag)
+
+    def status(self, tid: str | None = None) -> dict:
+        if tid and tid in self._teams:
+            return self._teams[tid]["comp"].status()
+        return {"teams": len(self._teams), "category": self.category, "max_gen": self.max_gen}
+
+    def scoreboard(self) -> list[dict]:
+        with self.lock:
+            rows = []
+            for t in self._teams.values():
+                sc = t["comp"].teams[t["inner"]]
+                rows.append({"name": t["name"], "score": sc["score"], "solves": sc["solves"],
+                             "reached_gen": sc["best_gen"],
+                             "agent_now": t["comp"].status()["attack"]})
+            return sorted(rows, key=lambda r: (-r["reached_gen"], -r["score"]))
 
 
 def run_competition_demo(category: str = "crypto", seed: int = 1234,

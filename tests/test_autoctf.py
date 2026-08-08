@@ -310,6 +310,23 @@ class Step10LiveCompetition(unittest.TestCase):
         self.assertEqual(bd.mechanics["attack_class"], "bonehdurfee")
         self.assertIsNone(competitor.solve(bd.artifacts))     # agent undefeated
 
+    def test_host_gives_each_team_an_independent_agent(self):
+        """Upload-your-agent model: your solves evolve only YOUR challenge-maker."""
+        from autoctf_gan import competitor
+        from autoctf_gan.competition import CompetitionHost
+        host = CompetitionHost(category="crypto", seed=1234, max_gen=3)
+        a = host.register("A")["team_id"]
+        b = host.register("B")["team_id"]
+        for _ in range(3):                                   # team A plays; B idle
+            ch = host.challenge(a)
+            f = competitor.solve(ch["files"])
+            if not f or not host.submit(a, ch["challenge_id"], f).get("correct"):
+                break
+        self.assertEqual(host.challenge(b)["gen"], 0)        # B's agent untouched
+        self.assertGreaterEqual(host.status(a)["gen"], 1)    # A's agent evolved
+        board = {r["name"]: r for r in host.scoreboard()}
+        self.assertGreater(board["A"]["reached_gen"], board["B"]["reached_gen"])
+
     def test_submission_scoring_and_flow(self):
         from autoctf_gan.competition import Competition
         from autoctf_gan import competitor

@@ -82,8 +82,8 @@ def serve_stdlib(port: int = 8080, cfg: TournamentConfig | None = None) -> None:
 
     cfg = cfg or TournamentConfig()
 
-    from .competition import Competition
-    comp = Competition(category="crypto", seed=1234, evolve_on=1, max_gen=6)
+    from .competition import CompetitionHost
+    host = CompetitionHost(category="crypto", seed=1234, max_gen=6)
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def log_message(self, *a):  # quiet
@@ -142,17 +142,18 @@ def serve_stdlib(port: int = 8080, cfg: TournamentConfig | None = None) -> None:
 
             # ---- live competition endpoints (real teams vs. evolving agent) ----
             if path == "/comp/status":
-                return self._send(200, "application/json", json.dumps(comp.status()))
+                return self._send(200, "application/json",
+                                  json.dumps(host.status(qs.get("team", [None])[0])))
             if path == "/comp/scoreboard":
-                return self._send(200, "application/json", json.dumps(comp.scoreboard()))
+                return self._send(200, "application/json", json.dumps(host.scoreboard()))
             if path == "/comp/register":
                 return self._send(200, "application/json",
-                                  json.dumps(comp.register(qs.get("name", ["anon"])[0])))
+                                  json.dumps(host.register(qs.get("name", ["anon"])[0])))
             if path == "/comp/challenge":
                 return self._send(200, "application/json",
-                                  json.dumps(comp.current(qs.get("team", [None])[0])))
+                                  json.dumps(host.challenge(qs.get("team", [""])[0])))
             if path == "/comp/submit":
-                r = comp.submit(qs.get("team", [""])[0], qs.get("challenge", [""])[0],
+                r = host.submit(qs.get("team", [""])[0], qs.get("challenge", [""])[0],
                                 qs.get("flag", [""])[0])
                 return self._send(200, "application/json", json.dumps(r))
             if path == "/arena":
