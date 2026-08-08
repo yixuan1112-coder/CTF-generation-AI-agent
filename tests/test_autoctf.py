@@ -290,5 +290,39 @@ class Step9Lattice(unittest.TestCase):
             self.assertTrue(res and set(res) == {p, q})
 
 
+class Step10LiveCompetition(unittest.TestCase):
+    def test_real_solves_evolve_the_agent(self):
+        """Teams submit real flags; each solve evolves the agent to a harder variant."""
+        from autoctf_gan.competition import run_competition_demo
+        res = run_competition_demo(category="crypto", seed=1234, max_gen=6)
+        self.assertGreaterEqual(res["final_gen"], 3)          # agent escalated
+        self.assertTrue(all(t["score"] > 0 for t in res["scoreboard"]))  # teams scored
+        # at least one "challenge evolved" event happened from a real solve
+        self.assertTrue(any(e["evt"] == "solve" for e in res["events"]))
+
+    def test_agent_stays_ahead_of_the_toolkit(self):
+        """The sample toolkit has no lattice attack -> cannot crack Boneh-Durfee."""
+        from autoctf_gan import competitor
+        from autoctf_gan.crypto_ladder import LADDER_NAMES, gen_crypto_ladder
+        if "bonehdurfee" not in LADDER_NAMES:
+            self.skipTest("fpylll not available")
+        bd = gen_crypto_ladder(seed=1234, generation=6)
+        self.assertEqual(bd.mechanics["attack_class"], "bonehdurfee")
+        self.assertIsNone(competitor.solve(bd.artifacts))     # agent undefeated
+
+    def test_submission_scoring_and_flow(self):
+        from autoctf_gan.competition import Competition
+        from autoctf_gan import competitor
+        comp = Competition(category="crypto", seed=42, evolve_on=1, max_gen=6)
+        t = comp.register("solo")["team_id"]
+        ch = comp.current(t)
+        self.assertNotIn("flag", ch)                          # never leak the flag
+        wrong = comp.submit(t, ch["challenge_id"], "flag{nope}")
+        self.assertFalse(wrong["correct"])
+        flag = competitor.solve(ch["files"])
+        right = comp.submit(t, ch["challenge_id"], flag)
+        self.assertTrue(right["correct"] and right["points"] > 0 and right["evolved"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

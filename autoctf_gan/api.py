@@ -81,6 +81,9 @@ def serve_stdlib(port: int = 8080, cfg: TournamentConfig | None = None) -> None:
 
     cfg = cfg or TournamentConfig()
 
+    from .competition import Competition
+    comp = Competition(category="crypto", seed=1234, evolve_on=1, max_gen=6)
+
     class Handler(http.server.BaseHTTPRequestHandler):
         def log_message(self, *a):  # quiet
             pass
@@ -135,6 +138,22 @@ def serve_stdlib(port: int = 8080, cfg: TournamentConfig | None = None) -> None:
                                       {"Content-Disposition": f'attachment; filename="{name}"'})
                 except Exception as exc:
                     return self._send(200, "application/json", json.dumps({"error": str(exc)}))
+
+            # ---- live competition endpoints (real teams vs. evolving agent) ----
+            if path == "/comp/status":
+                return self._send(200, "application/json", json.dumps(comp.status()))
+            if path == "/comp/scoreboard":
+                return self._send(200, "application/json", json.dumps(comp.scoreboard()))
+            if path == "/comp/register":
+                return self._send(200, "application/json",
+                                  json.dumps(comp.register(qs.get("name", ["anon"])[0])))
+            if path == "/comp/challenge":
+                return self._send(200, "application/json",
+                                  json.dumps(comp.current(qs.get("team", [None])[0])))
+            if path == "/comp/submit":
+                r = comp.submit(qs.get("team", [""])[0], qs.get("challenge", [""])[0],
+                                qs.get("flag", [""])[0])
+                return self._send(200, "application/json", json.dumps(r))
 
             self._send(200, "text/html", DASHBOARD.read_text(encoding="utf-8"))
 
