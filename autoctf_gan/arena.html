@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>AutoCTF-GAN — Live Arena</title>
+<style>
+  :root { --bg:#0d1117; --panel:#161b22; --line:#30363d; --fg:#c9d1d9; --dim:#8b949e;
+          --accent:#58a6ff; --ok:#3fb950; --bad:#f85149; --warn:#d29922; --gold:#e3b341; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace; background:var(--bg); color:var(--fg); }
+  header { padding:14px 20px; border-bottom:1px solid var(--line); }
+  header h1 { margin:0; font-size:17px; }
+  header p { margin:6px 0 0; color:var(--dim); }
+  header a { color:var(--accent); }
+  .wrap { max-width:1100px; margin:0 auto; padding:16px; }
+  .bar { display:flex; flex-wrap:wrap; gap:12px; align-items:center; background:var(--panel);
+         border:1px solid var(--line); border-radius:8px; padding:14px; }
+  select,button { font:inherit; border-radius:6px; }
+  select { background:#0d1117; color:var(--fg); border:1px solid var(--line); padding:8px 10px; }
+  button { background:var(--accent); color:#0d1117; border:0; padding:9px 18px; font-weight:bold; cursor:pointer; }
+  button:disabled { opacity:.5; cursor:default; }
+  .gen { margin-left:auto; text-align:right; }
+  .gen .big { font-size:26px; font-weight:bold; color:var(--gold); }
+  .gen .sub { color:var(--dim); font-size:12px; }
+  .grid { display:grid; grid-template-columns:1.2fr 1fr; gap:14px; margin-top:14px; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:14px; }
+  .panel h2 { margin:0 0 10px; font-size:12px; text-transform:uppercase; letter-spacing:1px; color:var(--dim); }
+  .full { grid-column:1 / -1; }
+  #ladder { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:6px; }
+  .rung { padding:4px 9px; border:1px solid var(--line); border-radius:14px; font-size:12px; color:var(--dim); }
+  .rung.done { border-color:var(--ok); color:var(--ok); }
+  .rung.active { border-color:var(--gold); color:var(--gold); box-shadow:0 0 0 1px var(--gold); }
+  .rung.boss { border-color:var(--bad); color:var(--bad); }
+  #prob .story { font-size:15px; margin:6px 0; }
+  #prob .files { color:var(--dim); }
+  #log { font-size:12.5px; max-height:320px; overflow:auto; }
+  .ln { padding:3px 0; border-bottom:1px dotted #21262d; }
+  .k { color:var(--accent); } .solve { color:var(--ok); } .boss { color:var(--bad); } .muted { color:var(--dim); }
+  .fb { color:var(--gold); }
+  table { width:100%; border-collapse:collapse; }
+  th,td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); }
+  th { color:var(--dim); font-weight:normal; }
+  .rank1 { color:var(--gold); font-weight:bold; }
+  #verdict { margin-top:14px; padding:14px; border-radius:8px; text-align:center; font-size:16px; display:none; }
+  #verdict.win { background:#13251a; border:1px solid var(--ok); color:var(--ok); }
+  #verdict.boss { background:#2a1414; border:1px solid var(--bad); color:var(--warn); }
+</style>
+</head>
+<body>
+<header>
+  <h1>⚔️ AutoCTF-GAN — Live Arena</h1>
+  <p>Watch competitor agents attack while your Generator agent evolves to stay ahead.
+     Other views: <a href="/">Evolution matrix</a> · <a href="/console">Challenge console</a></p>
+</header>
+
+<div class="wrap">
+  <div class="bar">
+    <label>Teams <select id="teams"><option>1</option><option selected>3</option><option>5</option></select></label>
+    <label>Speed
+      <select id="speed"><option value="900">slow</option><option value="450" selected>normal</option><option value="120">fast</option></select>
+    </label>
+    <button id="run">▶ Run Competition</button>
+    <span id="status" class="muted"></span>
+    <div class="gen">
+      <div class="big" id="gen-big">Gen-0</div>
+      <div class="sub" id="gen-attack">waiting…</div>
+    </div>
+  </div>
+
+  <div id="ladder"></div>
+
+  <div class="grid">
+    <div class="panel" id="prob">
+      <h2>📋 Current Problem <span class="muted">(what teams are attacking)</span></h2>
+      <div class="story" id="prob-story">—</div>
+      <div class="files" id="prob-files"></div>
+    </div>
+    <div class="panel">
+      <h2>🏆 Scoreboard</h2>
+      <table><thead><tr><th>Team</th><th>Score</th><th>Solves</th></tr></thead>
+      <tbody id="score"></tbody></table>
+    </div>
+    <div class="panel full">
+      <h2>📡 Battle log</h2>
+      <div id="log"></div>
+    </div>
+  </div>
+
+  <div id="verdict"></div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const LADDER = ["smalle","hastad","commonmod","wiener","fermat","pollard","bonehdurfee"];
+const scores = {};
+function esc(s){ return (s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+
+function drawLadder(activeIdx, doneMax){
+  $('#ladder').innerHTML = LADDER.map((n,i)=>{
+    let cls='rung';
+    if(i===LADDER.length-1) cls+=' boss';
+    if(i<=doneMax) cls+=' done';
+    if(i===activeIdx) cls+=' active';
+    return `<span class="${cls}">Gen-${i} · ${n}</span>`;
+  }).join('');
+}
+function log(html){ const d=document.createElement('div'); d.className='ln'; d.innerHTML=html;
+  const L=$('#log'); L.prepend(d); while(L.children.length>200) L.removeChild(L.lastChild); }
+function renderScore(){
+  const rows=Object.entries(scores).sort((a,b)=>b[1].score-a[1].score);
+  $('#score').innerHTML=rows.map(([n,v],i)=>`<tr class="${i===0?'rank1':''}"><td>${esc(n)}</td><td>${v.score}</td><td>${v.solves}</td></tr>`).join('');
+}
+const sleep = ms => new Promise(r=>setTimeout(r,ms));
+
+async function run(){
+  $('#run').disabled=true; $('#status').textContent='running…'; $('#verdict').style.display='none';
+  $('#log').innerHTML=''; for(const k in scores) delete scores[k];
+  drawLadder(0,-1); renderScore();
+  const teams=$('#teams').value, speed=+$('#speed').value;
+  let res;
+  try{ res = await (await fetch(`/comp/simulate?teams=${teams}`)).json(); }
+  catch(e){ $('#status').textContent='error: '+e; $('#run').disabled=false; return; }
+
+  let maxDone=-1, finalGen=0, finalAttack='';
+  for(const e of res.events){
+    if(e.evt==='team.registered'){ scores[e.team]={score:0,solves:0}; renderScore();
+      log(`<span class="muted">＋ ${esc(e.team)} joined</span>`); }
+    else if(e.evt==='challenge.deployed'){
+      const idx=LADDER.indexOf(e.attack); finalGen=e.gen; finalAttack=e.attack;
+      $('#gen-big').textContent='Gen-'+e.gen; $('#gen-attack').textContent=e.attack+' attack';
+      drawLadder(idx, maxDone);
+      $('#prob-story').textContent=e.story||e.title;
+      $('#prob-files').textContent='files: '+(e.files||[]).join(', ');
+      log(`<span class="k">🤖 agent deploys Gen-${e.gen}</span> — <b>${esc(e.attack)}</b>`);
+    }
+    else if(e.evt==='solve'){
+      const s=scores[e.team]; if(s){ s.score+=e.points; s.solves++; renderScore(); }
+      maxDone=Math.max(maxDone, e.gen); drawLadder(LADDER.indexOf(finalAttack), maxDone);
+      const fb=e.first_blood?'<span class="fb">FIRST BLOOD</span> ':'';
+      log(`<span class="solve">🚩 ${esc(e.team)} solved Gen-${e.gen}</span> ${fb}<span class="muted">+${e.points}</span>`);
+    }
+    else if(e.evt==='evolve.rejected'){ log(`<span class="boss">✗ evolution rejected: ${esc(e.reason)}</span>`); }
+    await sleep(speed);
+  }
+  // verdict
+  const board=(res.scoreboard||[]);
+  const v=$('#verdict');
+  if(finalAttack==='bonehdurfee'){
+    v.className='boss'; v.innerHTML=`🛡️ Your agent reached <b>Gen-${finalGen} (Boneh–Durfee)</b> and no team could crack it — <b>agent undefeated</b>.`;
+  } else {
+    v.className='win'; v.innerHTML=`🏁 Competition ended at <b>Gen-${finalGen} (${esc(finalAttack)})</b>. Top team: <b>${esc(board[0]?.name||'—')}</b> (${board[0]?.score||0} pts).`;
+  }
+  v.style.display='block';
+  $('#status').textContent='done'; $('#run').disabled=false;
+}
+$('#run').onclick=run;
+drawLadder(0,-1);
+</script>
+</body>
+</html>

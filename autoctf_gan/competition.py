@@ -69,8 +69,7 @@ class Competition:
         self.gen = 0
         self.solvers_of_current: set[str] = set()
         self.first_blood_taken = False
-        self._log("challenge.deployed", gen=0, challenge_id=self.spec.spec_id,
-                  attack=self._attack())
+        self._log_deploy()
 
     # ---- helpers -----------------------------------------------------------
     def _attack(self) -> str:
@@ -78,6 +77,12 @@ class Competition:
 
     def _log(self, evt: str, **kw) -> None:
         self.events.append({"evt": evt, "t": round(time.monotonic() - self._t0, 2), **kw})
+
+    def _log_deploy(self) -> None:
+        s = self.spec
+        self._log("challenge.deployed", gen=self.gen, challenge_id=s.spec_id,
+                  attack=self._attack(), title=s.title, story=s.story,
+                  hints=s.hints, files=list(s.artifacts))
 
     # ---- public API --------------------------------------------------------
     def register(self, name: str) -> dict:
@@ -136,8 +141,7 @@ class Competition:
         self.gen = child.lineage.generation
         self.solvers_of_current = set()
         self.first_blood_taken = False
-        self._log("challenge.deployed", gen=self.gen, challenge_id=child.spec_id,
-                  attack=self._attack())
+        self._log_deploy()
         return True
 
     def scoreboard(self) -> list[dict]:

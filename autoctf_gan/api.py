@@ -21,6 +21,7 @@ from .tournament import TournamentConfig, run_tournament_events
 
 DASHBOARD = Path(__file__).with_name("dashboard.html")
 CONSOLE = Path(__file__).with_name("console.html")
+ARENA = Path(__file__).with_name("arena.html")
 
 
 # ---------------------------------------------------------------------------
@@ -154,6 +155,16 @@ def serve_stdlib(port: int = 8080, cfg: TournamentConfig | None = None) -> None:
                 r = comp.submit(qs.get("team", [""])[0], qs.get("challenge", [""])[0],
                                 qs.get("flag", [""])[0])
                 return self._send(200, "application/json", json.dumps(r))
+            if path == "/arena":
+                return self._send(200, "text/html", ARENA.read_text(encoding="utf-8"))
+            if path == "/comp/simulate":
+                from .competition import run_competition_demo
+                n = max(1, min(6, int(qs.get("teams", ["3"])[0])))
+                cat = qs.get("category", ["crypto"])[0]
+                names = tuple(f"team-{i+1}" for i in range(n))
+                res = run_competition_demo(category=cat, seed=1234,
+                                           team_names=names, max_gen=6)
+                return self._send(200, "application/json", json.dumps(res))
 
             self._send(200, "text/html", DASHBOARD.read_text(encoding="utf-8"))
 
