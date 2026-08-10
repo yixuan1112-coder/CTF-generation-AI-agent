@@ -6,6 +6,49 @@ single fact decides the whole deployment.
 
 ---
 
+## Pick your path
+
+**A · A real public arena (you have, or will rent, a server).** One command on a
+fresh Ubuntu 22.04/24.04 box with a domain already pointed at it:
+
+```bash
+git clone https://github.com/yixuan1112-coder/CTF-generation-AI-agent
+cd CTF-generation-AI-agent
+sudo bash deploy/bootstrap.sh arena.example.com you@example.com
+```
+
+That installs Docker, Python, the arena, a systemd service and Caddy with
+automatic HTTPS, builds the agent sandbox image, and tells you at the end whether
+the sandbox actually came up in Docker mode. Roughly $5/month of VPS is plenty.
+Re-running it upgrades in place.
+
+**B · Show it to a few people today, no server.** Expose the arena already running
+on your machine through a tunnel:
+
+```bash
+# in one terminal
+python -m arena_platform.server --host 127.0.0.1 --port 8090
+# in another
+cloudflared tunnel --url http://127.0.0.1:8090      # prints a public https URL
+```
+
+⚠️ **Only do this with people you trust.** A tunnel does not improve the sandbox.
+If your host reports anything other than `"strength": "strong"`, every uploaded
+agent runs as your user, on your laptop, with access to your files. Install
+Docker first, or keep it to your own team.
+
+**C · Same room, same network.** No tunnel, no certificates:
+
+```bash
+python -m arena_platform.server --host 0.0.0.0 --port 8090
+```
+
+Others use `http://<your-ip>:8090`. Binding a non-loopback address automatically
+blocks remote-agent URLs aimed at private addresses, so nobody can turn your
+arena into a probe of your own network.
+
+---
+
 ## The rule that decides everything
 
 Run the agent sandbox under **Docker**. Not optional for a public arena.

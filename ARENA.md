@@ -226,9 +226,20 @@ What the platform guarantees either way:
 
 ## 7. Publishing it on the internet
 
-Yes — it is a normal Python HTTP server and hosts like one. See
-**[deploy/](deploy/)** for a systemd unit, Caddy and nginx configs, and the full
-walkthrough. The short version:
+Yes — it is a normal Python HTTP server and hosts like one. On a fresh Ubuntu
+server with a domain pointed at it, the whole thing is one command:
+
+```bash
+sudo bash deploy/bootstrap.sh arena.example.com you@example.com
+```
+
+That installs Docker, Python, the arena, a systemd service and Caddy with
+automatic HTTPS, then reports whether the sandbox really came up in Docker mode.
+No server? `cloudflared tunnel --url http://127.0.0.1:8090` gives you a public URL
+for the arena on your own machine — but read the warning in
+**[deploy/](deploy/README.md)** first, because a tunnel does not harden the
+sandbox. Full walkthrough, systemd unit and proxy configs all live in
+**[deploy/](deploy/)**.
 
 | Option | Verdict |
 |---|---|
