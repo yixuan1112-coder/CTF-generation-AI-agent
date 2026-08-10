@@ -18,6 +18,7 @@ Removing the weakness at any rung makes that rung's PoC fail -> spec rejected (P
 from __future__ import annotations
 
 import hashlib
+import math
 import random
 
 from Crypto.Util.number import bytes_to_long, inverse, isPrime
@@ -305,6 +306,41 @@ def _fpylll_available() -> bool:
         return False
 
 
+def _wiener_recovers(e: int, n: int, d: int) -> bool:
+    """Does the Gen-3 attack already crack this key?
+
+    d sits at N^0.255, only just past Wiener's N^0.25 bound, and Wiener's
+    continued-fraction search succeeds a little beyond it depending on how the
+    expansion falls — empirically on roughly 5% of instances. Raising d is not an
+    option: measured across a seed sweep, the shipped Boneh-Durfee attack
+    (delta=0.28, mm=5) recovers d reliably at 0.255 and not at all by 0.265, so a
+    larger d would leave the rung unsolvable and verify_spec would reject it.
+
+    So instead the generator re-rolls the key. Without this, ~1 team in 20 gets a
+    boss rung its Wiener stage alone can beat, and since the arena ranks on depth
+    first, that luck decides the top of the leaderboard.
+    """
+    cf, a, b = [], e, n
+    while b:
+        cf.append(a // b)
+        a, b = b, a % b
+    for i in range(len(cf)):
+        num, den = 1, 0
+        for x in reversed(cf[: i + 1]):
+            num, den = x * num + den, num
+        k, cand = num, den
+        if k == 0 or (e * cand - 1) % k:
+            continue
+        phi = (e * cand - 1) // k
+        bb = n - phi + 1
+        disc = bb * bb - 4 * n
+        if disc >= 0:
+            root = math.isqrt(disc)
+            if root * root == disc:
+                return cand == d
+    return False
+
+
 def gen_boneh_durfee(seed, generation, **kw):
     import inspect
 
@@ -325,9 +361,11 @@ def gen_boneh_durfee(seed, generation, **kw):
             continue
         try:
             e = inverse(d, phi)
-            break
         except ValueError:
             continue
+        if _wiener_recovers(e, n, d):             # the previous rung must not suffice
+            continue
+        break
     c = pow(m, e, n)
     lattice_src = inspect.getsource(lattice)
     solver = (
