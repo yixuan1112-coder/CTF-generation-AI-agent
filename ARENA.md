@@ -224,7 +224,41 @@ What the platform guarantees either way:
 
 ---
 
-## 7. Exposing it beyond localhost
+## 7. Publishing it on the internet
+
+Yes — it is a normal Python HTTP server and hosts like one. See
+**[deploy/](deploy/)** for a systemd unit, Caddy and nginx configs, and the full
+walkthrough. The short version:
+
+| Option | Verdict |
+|---|---|
+| VPS with Docker (Hetzner, DigitalOcean, EC2) | ✅ the right answer |
+| Container PaaS (Railway, Render, Fly.io) | ⚠️ often no usable Docker daemon or user namespaces — check `/api/config` first |
+| Static hosts (GitHub Pages, Netlify) | ❌ cannot run Python at all |
+
+**One hard rule: run the agent sandbox under Docker.** Without it agents execute
+as the same OS user as the server, so the filesystem is not a boundary — an
+uploaded agent could read the arena's database and every other team's code. Fine
+on your laptop, not fine for public submissions.
+
+```bash
+docker build -t autoctf-arena-agent:latest -f Dockerfile.agent .
+curl -s localhost:8090/api/config | python3 -m json.tool | grep -A6 isolation
+```
+
+`"strength": "strong"` means Docker is in play. Anything else means do not open it
+up yet.
+
+The arena runs on the **host**, not in a container — it needs the Docker daemon to
+sandbox agents, and reaching that from inside a container means mounting the
+Docker socket, which turns any escape into host root. Only the untrusted agents
+get containerised.
+
+Whatever proxy you use must **not buffer responses** (the live match view is SSE;
+a buffering proxy makes it look frozen) and must **allow bodies over 8 MB** (the
+agent upload cap).
+
+## 8. Exposing it beyond localhost
 
 The default bind is `127.0.0.1`. When you bind a reachable address the server
 automatically sets `ARENA_BLOCK_PRIVATE_REMOTE=1`, so a team cannot register a remote
@@ -249,7 +283,7 @@ Environment knobs:
 
 ---
 
-## 8. HTTP API
+## 9. HTTP API
 
 Authenticate with `Authorization: Bearer <token>` from team registration.
 
@@ -281,7 +315,7 @@ curl -s $S/api/matches -H "Authorization: Bearer $TOKEN" \
 
 ---
 
-## 9. Tests
+## 10. Tests
 
 ```bash
 python -m unittest tests.test_arena -v

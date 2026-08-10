@@ -1,0 +1,52 @@
+# systemd unit for the AutoCTF Arena.
+#
+# The arena runs on the HOST, not inside a container. It needs to talk to the
+# Docker daemon to sandbox each uploaded agent, and the only way to do that from
+# inside a container is to mount the Docker socket — which hands any container
+# escape full root on the host. This repo's own security notes rule that out, so
+# the arena stays on the host and only the untrusted agents get containerised.
+#
+#   sudo cp deploy/arena.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now arena
+#   journalctl -u arena -f
+
+[Unit]
+Description=AutoCTF Arena competition server
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=arena
+Group=docker
+WorkingDirectory=/opt/arena
+Environment=PYTHONUNBUFFERED=1
+# Build this first: docker build -t autoctf-arena-agent:latest -f Dockerfile.agent .
+Environment=ARENA_DOCKER_IMAGE=autoctf-arena-agent:latest
+# Redundant behind a public bind (the server sets it itself) but explicit is better.
+Environment=ARENA_BLOCK_PRIVATE_REMOTE=1
+Environment=ARENA_AGENT_MEMORY_MB=2048
+
+# Bound to loopback on purpose: the reverse proxy in front terminates TLS.
+ExecStart=/opt/arena/.venv/bin/python -m arena_platform.server \
+    --host 127.0.0.1 --port 8090 \
+    --data-dir /var/lib/arena \
+    --workers 2 \
+    --backend docker
+
+Restart=on-failure
+RestartSec=5
+
+# The arena itself needs no special privileges — the agents are what get confined.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/arena
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

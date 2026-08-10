@@ -1,0 +1,28 @@
+# Caddy in front of the arena: automatic HTTPS, and the two settings that
+# streaming needs.
+#
+#   sudo cp deploy/Caddyfile /etc/caddy/Caddyfile
+#   sudo systemctl reload caddy
+
+arena.example.com {
+	encode zstd gzip
+
+	# The live match view is Server-Sent Events. flush_interval -1 disables
+	# response buffering — without it the whole climb arrives at once when the
+	# match ends, and the page looks frozen while it runs.
+	reverse_proxy 127.0.0.1:8090 {
+		flush_interval -1
+		transport http {
+			read_timeout 0
+		}
+	}
+
+	# Agent uploads are capped at 8 MB by the app; leave a little headroom.
+	request_body {
+		max_size 12MB
+	}
+
+	log {
+		output file /var/log/caddy/arena.log
+	}
+}
