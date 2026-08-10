@@ -56,7 +56,7 @@ class SandboxTests(unittest.TestCase):
         run = run_agent(d, "agent.py", {**CHALLENGE, "gen": 4}, Limits(wall_seconds=30))
         self.assertEqual(run.flag, "flag{gen4}")
 
-    def test_network_is_blocked(self):
+    def test_egress_is_blocked(self):
         d = write_agent(self.tmp / "net", "import socket\n"
                                           "def solve(files):\n"
                                           "    socket.create_connection(('1.1.1.1', 80), 2)\n"
@@ -64,6 +64,33 @@ class SandboxTests(unittest.TestCase):
         run = run_agent(d, "agent.py", CHALLENGE, Limits(wall_seconds=30))
         self.assertFalse(run.ok)
         self.assertIsNone(run.flag)
+
+    def test_loopback_stays_usable_when_the_kernel_enforces_the_boundary(self):
+        """Booting a local target and exploiting it IS the web track's workflow.
+
+        Blanket-removing the socket API would block egress and that workflow
+        together, so where a real network namespace exists the guard stays off
+        and the kernel does the enforcing.
+        """
+        from arena_platform.sandbox import backend_report
+
+        if not backend_report()["loopback"]:
+            self.skipTest("host has no network namespace; sockets are removed wholesale")
+        d = write_agent(self.tmp / "loop",
+                        "import http.server, threading, urllib.request\n"
+                        "def solve(files):\n"
+                        "    class H(http.server.BaseHTTPRequestHandler):\n"
+                        "        def do_GET(s):\n"
+                        "            s.send_response(200); s.end_headers()\n"
+                        "            s.wfile.write(b'flag{loopback}')\n"
+                        "        def log_message(s, *a): pass\n"
+                        "    srv = http.server.HTTPServer(('127.0.0.1', 0), H)\n"
+                        "    threading.Thread(target=srv.serve_forever, daemon=True).start()\n"
+                        "    url = 'http://127.0.0.1:%d/' % srv.server_address[1]\n"
+                        "    return urllib.request.urlopen(url, timeout=5).read().decode()\n")
+        run = run_agent(d, "agent.py", CHALLENGE, Limits(wall_seconds=60))
+        self.assertTrue(run.ok, run.error)
+        self.assertEqual(run.flag, "flag{loopback}")
 
     def test_infinite_loop_is_killed(self):
         d = write_agent(self.tmp / "spin", "def solve(files):\n"
@@ -275,6 +302,47 @@ class TrackTests(unittest.TestCase):
     def test_rung_name_clamps_past_the_end(self):
         track = get_track("crypto")
         self.assertEqual(track.rung_name(999), track.rungs[-1])
+
+
+class TrackLadderIntegrityTests(unittest.TestCase):
+    """A track must not advertise more rungs than its generator can produce.
+
+    Each of these ladders clamps at its last entry: ask for a deeper generation
+    and you get the previous challenge back. If a Track declares more rungs than
+    that, the arena redeploys an identical rung while telling the team it evolved,
+    and "cleared" stops meaning anything.
+    """
+
+    def _distinct_rungs(self, category: str, probe_depth: int = 9) -> int:
+        from autoctf_gan.competition import Competition
+
+        comp = Competition(category=category, seed=99, evolve_on=1,
+                           max_gen=probe_depth, verify_deploy=True)
+        team = comp.register("probe")["team_id"]
+        signatures = []
+        for _ in range(probe_depth + 1):
+            spec = comp.spec
+            signatures.append(spec.title.split(" (Gen-")[0])
+            if not comp.submit(team, spec.spec_id, spec.flag).get("evolved"):
+                break
+        distinct = []
+        for sig in signatures:
+            if sig not in distinct:
+                distinct.append(sig)
+        return len(distinct)
+
+    def test_web_track_stops_where_the_ladder_clamps(self):
+        self.assertEqual(len(get_track("web").rungs), self._distinct_rungs("web"))
+
+    def test_crypto_track_matches_the_engine_ladder(self):
+        from autoctf_gan.crypto_ladder import LADDER_NAMES
+        self.assertEqual(get_track("crypto").rungs, list(LADDER_NAMES))
+
+    def test_reverse_track_rungs_are_all_reachable(self):
+        """Reverse has no ceiling, so every declared rung must be distinct."""
+        track = get_track("reverse")
+        self.assertLessEqual(len(track.rungs),
+                             self._distinct_rungs("reverse", probe_depth=9))
 
 
 class LadderFairnessTests(unittest.TestCase):

@@ -85,6 +85,23 @@ def unshare_available() -> bool:
     return _probe("unshare", ["unshare", "-rn", "true"])
 
 
+def loopback_available() -> bool:
+    """Can we bring `lo` up inside the namespace?
+
+    A fresh netns ships loopback DOWN. Binding still succeeds, but connecting
+    does not — so without this an agent can start a local target and then fail
+    to talk to it, which is exactly the web track's workflow.
+    """
+    if not unshare_available():
+        return False
+    return _probe("unshare_lo", [
+        "unshare", "-rn", "--", "sh", "-c",
+        "ip link set lo up 2>/dev/null && python3 -c "
+        "'import socket,threading;"
+        "s=socket.socket();s.bind((\"127.0.0.1\",0));s.listen(1);"
+        "c=socket.create_connection(s.getsockname(),2);c.close()'"])
+
+
 def backend_report() -> dict:
     """What isolation this host can actually deliver — surfaced in the UI."""
     docker = docker_available()
@@ -94,12 +111,16 @@ def backend_report() -> dict:
         "docker": docker,
         "network_namespace": docker or unshare,
         "strength": "strong" if docker else ("medium" if unshare else "basic"),
-        "note": ("Docker containers with --network none."
+        "loopback": docker or loopback_available(),
+        "note": ("Docker container with --network none: loopback works, "
+                 "off-box traffic cannot leave."
                  if docker else
-                 "Hardened subprocess with kernel network namespace."
+                 "Kernel network namespace: loopback works, off-box traffic "
+                 "cannot leave."
                  if unshare else
-                 "Hardened subprocess; socket API removed but no kernel netns. "
-                 "Run behind Docker for public submissions."),
+                 "No kernel namespace on this host, so the socket API is removed "
+                 "entirely — that also blocks loopback. Run behind Docker for "
+                 "public submissions."),
     }
 
 
@@ -135,7 +156,11 @@ try:
 except Exception:
     pass
 
-if not LIM.get("allow_network"):
+# Only when there is NO kernel network namespace. With one, the kernel already
+# blocks egress while leaving loopback usable — and loopback is not a loophole,
+# it is how you solve a web challenge: boot the target app locally and exploit
+# it. Removing the socket API wholesale would make that track unsolvable.
+if LIM.get("socket_guard"):
     import socket
     class _Blocked(OSError):
         pass
@@ -272,6 +297,7 @@ NOTABLE_LIBRARIES = (
     ("pycryptodome", "Crypto"), ("sympy", "sympy"), ("fpylll", "fpylll"),
     ("gmpy2", "gmpy2"), ("numpy", "numpy"), ("requests", "requests"),
     ("pwntools", "pwn"), ("z3-solver", "z3"), ("sage", "sage"),
+    ("flask", "flask"), ("pycparser", "pycparser"),
 )
 
 _library_cache: list[str] | None = None
@@ -293,7 +319,7 @@ def available_libraries() -> list[str]:
     return list(_library_cache)
 
 
-def _child_env(entry: str, limits: Limits) -> dict[str, str]:
+def _child_env(entry: str, limits: Limits, *, netns: bool = False) -> dict[str, str]:
     """A scrubbed environment — no API keys, no host paths, no repo on sys.path."""
     keep = ("PATH", "LANG", "LC_ALL", "TZ", "HOME", "TMPDIR")
     env = {k: os.environ[k] for k in keep if k in os.environ}
@@ -307,6 +333,9 @@ def _child_env(entry: str, limits: Limits) -> dict[str, str]:
         "max_file_mb": limits.max_file_mb,
         "max_processes": limits.max_processes,
         "allow_network": limits.allow_network,
+        # Coarse socket removal is the fallback for hosts with no namespace
+        # support; where the kernel enforces it we leave loopback alone.
+        "socket_guard": not limits.allow_network and not netns,
         # RLIMIT_AS breaks any library that reserves large virtual arenas; the
         # container path caps real memory properly, so skip the VA cap there.
         "skip_as_limit": False,
@@ -351,11 +380,17 @@ def _run_subprocess(work: Path, entry: str, limits: Limits) -> AgentRun:
     # the repository stays unimportable.
     cmd = [sys.executable, "-E", "-B", "_harness.py"]
     limits_hit: list[str] = []
-    if not limits.allow_network and unshare_available():
-        cmd = ["unshare", "-rn", *cmd]          # kernel-enforced: no interfaces at all
+    netns = not limits.allow_network and unshare_available()
+    if netns:
+        # Kernel-enforced: the namespace has loopback and nothing else, so an
+        # agent may run a local target but cannot reach off-box. `lo` ships DOWN
+        # in a fresh namespace, so raise it first — otherwise connecting to your
+        # own server fails and the web track becomes unsolvable.
+        cmd = ["unshare", "-rn", "--", "sh", "-c",
+               'ip link set lo up 2>/dev/null; exec "$0" "$@"', *cmd]
 
     started = time.monotonic()
-    proc = subprocess.Popen(cmd, cwd=work, env=_child_env(entry, limits),
+    proc = subprocess.Popen(cmd, cwd=work, env=_child_env(entry, limits, netns=netns),
                             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, text=True, errors="replace",
                             start_new_session=True)
@@ -383,7 +418,7 @@ def _kill_group(proc: subprocess.Popen) -> None:
 
 
 def _run_docker(work: Path, entry: str, limits: Limits) -> AgentRun:
-    env = _child_env(entry, limits)
+    env = _child_env(entry, limits, netns=not limits.allow_network)
     env["ARENA_LIMITS"] = json.dumps({**json.loads(env["ARENA_LIMITS"]),
                                       "skip_as_limit": True})
     cmd = [

@@ -148,11 +148,16 @@ A team's leaderboard row is its **best** completed match, so reruns can only imp
 
 ## 5. The tracks
 
-| Track | Rungs | Ends at |
+| Track | Rungs | How it escalates |
 |---|---|---|
-| `crypto` | smalle → hastad → commonmod → wiener → fermat → pollard → bonehdurfee | a Boneh-Durfee lattice attack |
-| `reverse` | a compiled crackme that gains a transformation round per generation | rounds-6 |
-| `web` | a Flask SSTI archetype whose filters harden per generation | filter-5 |
+| `crypto` | smalle → hastad → commonmod → wiener → fermat → pollard → bonehdurfee | rotates to a harder attack *class* each rung |
+| `web` | bypass-flag → bypass-values → bypass-items → bypass-dictsort → bypass-popitem | each rung bans the token the previous bypass used |
+| `reverse` | R=1 → R=6 | one more key-schedule round each rung |
+
+Rung lists are read from the engine at startup, not hardcoded, so the board can
+never advertise a rung the generator cannot build. `crypto` and `web` both clamp at
+their last entry and the tracks stop exactly there; `reverse` has no natural
+ceiling, so the arena caps it at six rounds.
 
 `crypto` is the reference track: every rung ships a real paired proof-of-concept that
 `verify_spec` **executes** before the rung is allowed to deploy, so no team is ever handed
@@ -171,6 +176,13 @@ Uploaded agent code is hostile by assumption. Two backends, chosen automatically
 |---|---|---|
 | **docker** | a Docker daemon answers | `--network none`, memory/PID/CPU caps, `cap-drop ALL`, `no-new-privileges`, non-root |
 | **subprocess** | otherwise | hard `RLIMIT_CPU`/`AS`/`FSIZE`/`NPROC` set by the child before any agent code loads, killable process group, scrubbed environment, and a network namespace via `unshare -rn` where the kernel allows it |
+
+**Loopback is allowed; egress is not.** Both namespace backends leave `127.0.0.1`
+working and drop everything else — booting the target app locally and exploiting it
+is how you solve the web track, so removing sockets outright would make that ladder
+unsolvable. Only on a host with no namespace support does the harness fall back to
+stripping Python's socket API, which blocks loopback too; `GET /api/config` reports
+which of the two you are on.
 
 The live sandbox report is on `/docs` and in `GET /api/config`.
 

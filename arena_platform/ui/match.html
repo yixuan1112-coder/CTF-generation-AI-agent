@@ -135,7 +135,8 @@ function handle(e) {
       $('#setup').innerHTML = `
         <div class="row" style="gap:6px;margin-bottom:8px">
           <span class="badge ${iso.strength === 'strong' ? 'ok' : 'info'}">${esc(iso.backend || '—')}</span>
-          ${iso.network_namespace ? '<span class="badge ok">no network</span>' : ''}
+          ${iso.network_namespace ? '<span class="badge ok">no egress</span>' : ''}
+          ${iso.loopback ? '<span class="badge ok">loopback ok</span>' : ''}
           <span class="badge">${p.per_gen_timeout_s}s / attempt</span>
           <span class="badge">${Math.round(p.match_budget_s / 60)} min budget</span>
         </div>

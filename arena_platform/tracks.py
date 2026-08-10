@@ -75,6 +75,26 @@ def _crypto_rungs() -> list[str]:
     return rungs
 
 
+def _web_rungs() -> list[str]:
+    """Read the SSTI ladder from the engine.
+
+    Each rung bans the token the previous bypass used, so the rung's real
+    identity is the technique it forces you to. The ladder CLAMPS at its last
+    entry — asking for a deeper generation returns the same challenge again — so
+    the arena must stop exactly here or it would redeploy an identical rung while
+    telling the team it had evolved.
+    """
+    try:
+        from autoctf_gan.web import PAYLOAD_LADDER
+        return [f"bypass-{name}" for name, _ in PAYLOAD_LADDER]
+    except Exception as exc:
+        import sys
+        print(f"[arena] web ladder unavailable ({type(exc).__name__}: {exc})",
+              file=sys.stderr)
+        return ["bypass-flag", "bypass-values", "bypass-items",
+                "bypass-dictsort", "bypass-popitem"]
+
+
 def all_tracks() -> dict[str, Track]:
     return {
         "crypto": Track(
@@ -92,8 +112,10 @@ def all_tracks() -> dict[str, Track]:
             key="reverse",
             label="Reverse — compiled crackme",
             category="reverse",
-            blurb="A generated C crackme that gains a transformation round every generation.",
-            rungs=[f"rounds-{i + 1}" for i in range(6)],
+            blurb=("A generated C crackme whose key schedule gains a round every "
+                   "generation. Unlike the other ladders this one has no natural "
+                   "ceiling, so the arena caps it at six rounds."),
+            rungs=[f"R={i + 1}" for i in range(6)],
             per_gen_timeout_s=180,
             match_budget_s=1200,
         ),
@@ -101,8 +123,10 @@ def all_tracks() -> dict[str, Track]:
             key="web",
             label="Web — template injection",
             category="web",
-            blurb="A Flask SSTI archetype whose filters and sinks harden each generation.",
-            rungs=[f"filter-{i}" for i in range(6)],
+            blurb=("A Flask SSTI service behind a denylist. Every generation bans "
+                   "the token the previous bypass used, so each rung forces a new "
+                   "technique."),
+            rungs=_web_rungs(),
             per_gen_timeout_s=120,
             match_budget_s=900,
         ),

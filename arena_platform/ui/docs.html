@@ -59,8 +59,9 @@
     <h2>Sandbox &amp; limits</h2>
     <div id="limits"><div class="empty"><span class="spinner"></span> loading…</div></div>
     <ul style="color:var(--dim);font-size:13.5px;line-height:1.8;margin:14px 0 0;padding-left:20px">
-      <li><b style="color:var(--fg)">No network.</b> Uploaded agents run with the network removed.
-          Bring your tools in the zip, or use a remote agent.</li>
+      <li><b style="color:var(--fg)">Loopback yes, internet no.</b> You can boot a target on
+          <code class="inline">127.0.0.1</code> and exploit it — that is the web track's whole
+          workflow. Nothing leaves the box. Need the real internet? Use a remote agent.</li>
       <li><b style="color:var(--fg)">Libraries.</b> The standard library plus whatever this host
           has installed — see the list below. Every team gets exactly the same import path.
           Anything else must ship inside your zip.</li>
@@ -155,6 +156,8 @@ api('/api/config').then(cfg => {
         sandbox: ${esc(iso.backend)} (${esc(iso.strength)})</span>
       ${iso.network_namespace ? '<span class="badge ok">network namespace</span>'
                              : '<span class="badge warn">socket API removed</span>'}
+      ${iso.loopback ? '<span class="badge ok">loopback allowed</span>'
+                     : '<span class="badge warn">no loopback</span>'}
       <span class="badge">upload ≤ ${cfg.limits.max_upload_mb} MB</span>
       <span class="badge">${cfg.limits.max_active_matches} match at a time</span>
     </div>
