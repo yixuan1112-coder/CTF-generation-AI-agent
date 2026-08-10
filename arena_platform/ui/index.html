@@ -81,7 +81,8 @@ async function boot() {
 
   const sel = $('#track');
   sel.innerHTML = Object.values(CONFIG.tracks)
-    .map(t => `<option value="${esc(t.key)}">${esc(t.label)}</option>`).join('');
+    .map(t => `<option value="${esc(t.key)}">${esc(t.label)}` +
+              `${t.available === false ? ' (not playable)' : ''}</option>`).join('');
   if (!CONFIG.tracks[currentTrack]) currentTrack = Object.keys(CONFIG.tracks)[0];
   sel.value = currentTrack;
   sel.onchange = () => {
@@ -95,7 +96,9 @@ async function boot() {
 
 async function refresh() {
   const track = CONFIG.tracks[currentTrack];
-  $('#track-blurb').textContent = track.blurb;
+  $('#track-blurb').textContent = track.available === false
+    ? `${track.blurb} — NOT PLAYABLE: ${track.unavailable_reason}`
+    : track.blurb;
   $('#ladder-caption').innerHTML =
     `${track.rungs.length} rungs · ${track.per_gen_timeout_s}s per attempt · ` +
     `${Math.round(track.match_budget_s / 60)} min total budget per match`;

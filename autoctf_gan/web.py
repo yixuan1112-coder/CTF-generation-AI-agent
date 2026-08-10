@@ -46,6 +46,12 @@ if __name__ == "__main__":
     app.run(host="127.0.0.1", port=int(os.environ.get("PORT", "8000")))
 """
 
+# The player-facing Dockerfile must never carry the real flag: it is shipped as a
+# challenge artifact, so baking the answer in hands it to anyone who runs `cat`.
+# The organizer supplies FLAG at deploy time (`docker run -e FLAG=...`), which is
+# the model DEPLOYMENT.md already describes for every other category.
+DEPLOY_PLACEHOLDER = "flag{replace_at_deployment}"
+
 _DOCKERFILE = """\
 FROM python:3.11-slim
 RUN pip install --no-cache-dir flask==3.0.0 jinja2==3.1.2
@@ -116,7 +122,7 @@ def gen_web_ssti(*, seed: int, archetype_id: str = "web.ssti.jinja2",
                     for i in range(g + 1)],
         artifacts={
             "app.py": _FLASK_APP.replace("__DENY__", repr(deny)),
-            "Dockerfile": _DOCKERFILE.replace("{flag}", flag),
+            "Dockerfile": _DOCKERFILE.replace("{flag}", DEPLOY_PLACEHOLDER),
             "README.md": "# SSTI\n\nRecover the flag from the greeting service.",
         },
         official_solver=OfficialSolver(entry="solver.py", files={"solver.py": poc},
@@ -164,9 +170,13 @@ def _verify_local(spec: ChallengeSpec) -> Verdict:
         root = Path(tmp)
         for rel, content in {**spec.artifacts, **spec.official_solver.files}.items():
             (root / rel).write_text(content, encoding="utf-8")
-        leak_ok = spec.flag not in spec.artifacts["app.py"]
-        checks.append("flag not hardcoded in app source") if leak_ok else \
-            failures.append("flag hardcoded in source")
+        # Every artifact, not just app.py: the Dockerfile used to embed the real
+        # flag via ENV and this gate happily passed it through.
+        leaked = [name for name, content in spec.artifacts.items()
+                  if spec.flag in content]
+        leak_ok = not leaked
+        checks.append("flag absent from every player artifact") if leak_ok else \
+            failures.append(f"flag leaked into player artifacts: {', '.join(leaked)}")
         port = free_port()
         proc = serve_flask(root / "app.py", spec.flag, port)
         base = f"http://127.0.0.1:{port}"
@@ -220,7 +230,8 @@ def _verify_docker(spec: ChallengeSpec) -> Verdict:  # pragma: no cover - needs 
             return Verdict(False, "build_failed", failures=[build.stderr.strip()[:200]])
         checks.append("docker image built")
         try:
-            run = subprocess.run(["docker", "run", "-d", "--rm", "-p",
+            run = subprocess.run(["docker", "run", "-d", "--rm",
+                                  "-e", f"FLAG={spec.flag}", "-p",
                                   f"127.0.0.1:{port}:8000", tag],
                                  capture_output=True, text=True, timeout=60)
             cid = run.stdout.strip()
@@ -232,7 +243,11 @@ def _verify_docker(spec: ChallengeSpec) -> Verdict:  # pragma: no cover - needs 
             secs = time.monotonic() - t0
             recovered = poc.stdout.strip()
             poc_ok = hashlib.sha256(recovered.encode()).hexdigest() == expected
-            leak_ok = spec.flag not in root.joinpath("app.py").read_text(encoding="utf-8")
+            leaked = [name for name, content in spec.artifacts.items()
+                      if spec.flag in content]
+            leak_ok = not leaked
+            if leaked:
+                failures.append(f"flag leaked into player artifacts: {', '.join(leaked)}")
         finally:
             if cid:
                 subprocess.run(["docker", "stop", cid], capture_output=True, timeout=30)

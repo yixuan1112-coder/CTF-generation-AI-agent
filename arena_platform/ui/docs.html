@@ -164,7 +164,11 @@ api('/api/config').then(cfg => {
     <div class="note" style="margin-bottom:14px">${esc(iso.note)}</div>
     <table><thead><tr><th>Track</th><th>Rungs</th><th class="num">Per attempt</th><th class="num">Budget</th></tr></thead>
       <tbody>${t.map(x => `<tr>
-        <td><b>${esc(x.key)}</b><span style="display:block;color:var(--faint);font-size:12px">${esc(x.blurb)}</span></td>
+        <td><b>${esc(x.key)}</b>${x.available === false
+              ? ' <span class="badge warn">not playable</span>' : ''}
+            <span style="display:block;color:var(--faint);font-size:12px">${esc(x.blurb)}</span>
+            ${x.available === false
+              ? `<span style="display:block;color:var(--warn);font-size:12px;margin-top:4px">${esc(x.unavailable_reason)}</span>` : ''}</td>
         <td style="font-family:var(--mono);font-size:12px">${x.rungs.map(esc).join(' → ')}</td>
         <td class="num">${x.per_gen_timeout_s}s</td>
         <td class="num">${Math.round(x.match_budget_s / 60)}m</td></tr>`).join('')}</tbody></table>`;

@@ -32,3 +32,27 @@ A real run against a live arena:
 ```
 
 `champion.zip` itself is gitignored; build it with the command above.
+
+
+## `reverse_agent/` — clears the reverse ladder
+
+A single file, standard library only. It recovers the flag from `crackme.c`
+without ever guessing the password.
+
+The crackme XORs the flag against a keystream from a 32-bit xorshift, seeded by
+`mix_state(password)`. The password is not shipped — but xorshift32 is **linear
+over GF(2)**, so each keystream byte is eight linear equations in the 32 unknown
+state bits. The flag's own `flag{` prefix supplies five known bytes, i.e. 40
+equations for 32 unknowns, and Gaussian elimination pins the state exactly. No
+search, microseconds per rung.
+
+```bash
+# it is one file, so upload it directly — no zip needed
+curl -X POST "$ARENA/api/agents?kind=upload&name=xorshift&filename=agent.py" \
+     -H "Authorization: Bearer $TOKEN" --data-binary @examples/reverse_agent/agent.py
+```
+
+Worth knowing what this demonstrates about the track: `ROUNDS` only affects how
+the *password* reaches the state, and this attack never touches the password — so
+every rung falls in the same 3 ms and the reverse ladder does not separate strong
+agents from weak ones. Crypto is the track that discriminates.

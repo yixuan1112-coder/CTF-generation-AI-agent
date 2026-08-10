@@ -22,6 +22,11 @@ class Track:
     rungs: list[str] = field(default_factory=list)
     per_gen_timeout_s: int = 120
     match_budget_s: int = 900
+    # A track is playable only if its flag can be recovered from the files the
+    # agent receives. Service-style challenges cannot be, until the arena grows
+    # an instance broker — see `unavailable_reason`.
+    available: bool = True
+    unavailable_reason: str = ""
 
     @property
     def max_gen(self) -> int:
@@ -113,8 +118,12 @@ def all_tracks() -> dict[str, Track]:
             label="Reverse — compiled crackme",
             category="reverse",
             blurb=("A generated C crackme whose key schedule gains a round every "
-                   "generation. Unlike the other ladders this one has no natural "
-                   "ceiling, so the arena caps it at six rounds."),
+                   "generation. No natural ceiling, so the arena caps it at six. "
+                   "Be aware this ladder discriminates weakly: rounds only affect "
+                   "how the password reaches the keystream state, and an agent "
+                   "that solves for the state directly never touches the password "
+                   "— so every rung falls at the same speed. Use crypto to "
+                   "separate strong agents."),
             rungs=[f"R={i + 1}" for i in range(6)],
             per_gen_timeout_s=180,
             match_budget_s=1200,
@@ -129,8 +138,21 @@ def all_tracks() -> dict[str, Track]:
             rungs=_web_rungs(),
             per_gen_timeout_s=120,
             match_budget_s=900,
+            available=False,
+            unavailable_reason=(
+                "This is a service challenge: the flag is injected into the running "
+                "container as $FLAG at deploy time, so it exists nowhere in the files "
+                "an agent receives. Booting the supplied app.py locally yields only "
+                "flag{replace_at_deployment}. Until the arena can hand each match a "
+                "live instance to attack, no agent could win this track on merit, so "
+                "it is not offered. The ladder itself is sound and its rungs verify."),
         ),
     }
+
+
+def playable_tracks() -> dict[str, Track]:
+    """Only tracks an agent can actually win from the files it is handed."""
+    return {k: t for k, t in all_tracks().items() if t.available}
 
 
 def get_track(key: str) -> Track:

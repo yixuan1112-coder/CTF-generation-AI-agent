@@ -345,6 +345,97 @@ class TrackLadderIntegrityTests(unittest.TestCase):
                              self._distinct_rungs("reverse", probe_depth=9))
 
 
+class TrackAvailabilityTests(unittest.TestCase):
+    """A track is only offered if an agent could win it from the files it gets."""
+
+    def test_web_is_gated_with_a_stated_reason(self):
+        web = get_track("web")
+        self.assertFalse(web.available)
+        self.assertTrue(web.unavailable_reason)
+
+    def test_playable_set_excludes_gated_tracks(self):
+        from arena_platform.tracks import playable_tracks
+        self.assertNotIn("web", playable_tracks())
+        self.assertIn("crypto", playable_tracks())
+
+    def test_web_flag_really_is_absent_from_player_files(self):
+        """The reason for the gate, asserted rather than assumed."""
+        from autoctf_gan.web import gen_web_ssti
+
+        spec = gen_web_ssti(seed=11, generation=0)
+        blob = "\n".join(spec.artifacts.values())
+        self.assertNotIn(spec.flag, blob,
+                         "if the flag were in the player files the gate is wrong")
+
+    def test_reverse_flag_is_recoverable_from_player_files(self):
+        """Conversely, reverse stays open because its files do carry the answer."""
+        from autoctf_gan.native import gen_compiled_crackme
+
+        spec = gen_compiled_crackme(seed=11, rounds=2)
+        self.assertIn("ENC[]", spec.artifacts["crackme.c"])
+        self.assertIn("ROUNDS", spec.artifacts["crackme.c"])
+
+
+class FlagLeakGateTests(unittest.TestCase):
+    """A player artifact must never contain the real flag.
+
+    The web generator used to bake `ENV FLAG=<real flag>` into the Dockerfile it
+    hands players, and the gate meant to catch that only inspected app.py — so
+    exporting a web challenge shipped the answer with it.
+    """
+
+    def test_no_web_artifact_contains_the_flag(self):
+        from autoctf_gan.web import gen_web_ssti
+
+        for generation in (0, 2, 4):
+            spec = gen_web_ssti(seed=11, generation=generation)
+            leaked = [name for name, content in spec.artifacts.items()
+                      if spec.flag in content]
+            self.assertEqual(leaked, [], f"gen {generation} leaked via {leaked}")
+
+    def test_the_gate_rejects_a_reintroduced_leak(self):
+        from autoctf_gan.verify import verify_spec
+        from autoctf_gan.web import gen_web_ssti
+
+        spec = gen_web_ssti(seed=11, generation=0)
+        self.assertTrue(verify_spec(spec).valid, "clean spec should verify")
+
+        leaky = gen_web_ssti(seed=11, generation=0)
+        leaky.artifacts["Dockerfile"] = leaky.artifacts["Dockerfile"].replace(
+            "ENV FLAG=flag{replace_at_deployment}", f"ENV FLAG={leaky.flag}")
+        verdict = verify_spec(leaky)
+        self.assertFalse(verdict.valid, "a leaked flag must fail verification")
+        self.assertIn("Dockerfile", verdict.reason)
+
+    def test_crypto_and_reverse_artifacts_are_clean_too(self):
+        from autoctf_gan.crypto_ladder import gen_crypto_ladder
+        from autoctf_gan.native import gen_compiled_crackme
+
+        for spec in (gen_crypto_ladder(seed=5, generation=0),
+                     gen_compiled_crackme(seed=5, rounds=2)):
+            leaked = [n for n, c in spec.artifacts.items() if spec.flag in c]
+            self.assertEqual(leaked, [], f"{spec.category} leaked via {leaked}")
+
+
+class ReferenceAgentTests(unittest.TestCase):
+    """The shipped example agents must actually beat the ladders they claim to."""
+
+    def test_reverse_agent_clears_every_rung(self):
+        import importlib.util
+
+        from autoctf_gan.native import gen_compiled_crackme
+
+        path = Path(__file__).resolve().parents[1] / "examples" / "reverse_agent" / "agent.py"
+        spec = importlib.util.spec_from_file_location("reverse_reference", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        for rounds in range(1, len(get_track("reverse").rungs) + 1):
+            challenge = gen_compiled_crackme(seed=3000 + rounds, rounds=rounds)
+            self.assertEqual(module.solve(dict(challenge.artifacts)), challenge.flag,
+                             f"reference agent failed at R={rounds}")
+
+
 class LadderFairnessTests(unittest.TestCase):
     """The rungs have to be honest, or the depth-first ranking is a lottery."""
 

@@ -148,11 +148,27 @@ A team's leaderboard row is its **best** completed match, so reruns can only imp
 
 ## 5. The tracks
 
-| Track | Rungs | How it escalates |
-|---|---|---|
-| `crypto` | smalle → hastad → commonmod → wiener → fermat → pollard → bonehdurfee | rotates to a harder attack *class* each rung |
-| `web` | bypass-flag → bypass-values → bypass-items → bypass-dictsort → bypass-popitem | each rung bans the token the previous bypass used |
-| `reverse` | R=1 → R=6 | one more key-schedule round each rung |
+| Track | Playable | Rungs | How it escalates |
+|---|---|---|---|
+| `crypto` | ✅ | smalle → hastad → commonmod → wiener → fermat → pollard → bonehdurfee | rotates to a harder attack *class* each rung |
+| `reverse` | ⚠️ | R=1 → R=6 | one more key-schedule round each rung |
+| `web` | ❌ | bypass-flag → … → bypass-popitem | each rung bans the token the previous bypass used |
+
+**`crypto` is the track that discriminates.** Each rung needs a genuinely different
+attack, and the last one needs a lattice.
+
+**`reverse` is playable but weak.** Rounds only change how the password reaches the
+keystream state; an agent that solves for the state directly (see
+`examples/reverse_agent/`) never touches the password, so every rung falls at the
+same speed. Use it as a warm-up, not a decider.
+
+**`web` is not offered.** It is a service challenge — the flag is injected into the
+running container as `$FLAG` at deploy time, so it exists nowhere in the files an
+agent receives, and booting the supplied `app.py` locally yields only
+`flag{replace_at_deployment}`. No agent could win it on merit, so the API refuses
+to queue it (HTTP 409 with the reason) rather than letting a team burn a match.
+The ladder itself is sound and its rungs verify; it needs an instance broker, not
+a fix.
 
 Rung lists are read from the engine at startup, not hardcoded, so the board can
 never advertise a rung the generator cannot build. `crypto` and `web` both clamp at

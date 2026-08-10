@@ -124,6 +124,10 @@ class Arena:
             track = get_track(track_key)
         except KeyError as exc:
             raise ApiError(str(exc)) from exc
+        if not track.available:
+            # Better an honest refusal than a match the team cannot win.
+            raise ApiError(f"the {track.key} track is not currently playable: "
+                           f"{track.unavailable_reason}", 409)
 
         active = [m for m in self.store.recent_matches(limit=50, team_id=team["id"])
                   if m["status"] in ("queued", "running")]
@@ -270,7 +274,9 @@ class Handler(BaseHTTPRequestHandler):
             tracks = {k: {"key": t.key, "label": t.label, "blurb": t.blurb,
                           "rungs": t.rungs, "max_gen": t.max_gen,
                           "per_gen_timeout_s": t.per_gen_timeout_s,
-                          "match_budget_s": t.match_budget_s}
+                          "match_budget_s": t.match_budget_s,
+                          "available": t.available,
+                          "unavailable_reason": t.unavailable_reason}
                       for k, t in all_tracks().items()}
             return self._json({"tracks": tracks, "isolation": backend_report(),
                                "libraries": available_libraries(),

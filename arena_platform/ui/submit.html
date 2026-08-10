@@ -135,9 +135,18 @@ let CONFIG = null;
 async function boot() {
   CONFIG = await api('/api/config');
   const sel = $('#pick-track');
-  sel.innerHTML = Object.values(CONFIG.tracks)
+  const playable = Object.values(CONFIG.tracks).filter(t => t.available !== false);
+  sel.innerHTML = playable
     .map(t => `<option value="${esc(t.key)}">${esc(t.label)}</option>`).join('');
-  sel.value = localStorage.getItem('arena.track') || 'crypto';
+  const shelved = Object.values(CONFIG.tracks).filter(t => t.available === false);
+  if (shelved.length) {
+    $('#track-hint').insertAdjacentHTML('afterend', shelved.map(t =>
+      `<div class="note warn" style="margin-top:10px">
+         <b>${esc(t.label)}</b> is not currently playable. ${esc(t.unavailable_reason)}
+       </div>`).join(''));
+  }
+  const saved = localStorage.getItem('arena.track');
+  sel.value = playable.some(t => t.key === saved) ? saved : (playable[0]?.key || '');
   sel.onchange = showTrackHint;
   showTrackHint();
   paintTeam();
