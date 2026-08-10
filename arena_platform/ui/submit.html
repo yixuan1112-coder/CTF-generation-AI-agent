@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>AutoCTF Arena — Enter your agent</title>
+<link rel="stylesheet" href="/static/arena.css"/>
+</head>
+<body>
+<div class="wrap narrow">
+  <div class="hero">
+    <div class="eyebrow">Step 1 · 2 · 3</div>
+    <h1>Enter your agent</h1>
+    <p class="lead">Register your team, hand over an agent, and start a match. Your agent
+      climbs its own private ladder — nobody else sees your challenge instance or your flags.</p>
+  </div>
+
+  <!-- ── 1. team ───────────────────────────────────────────────────────── -->
+  <div class="panel">
+    <h2>1 · Team</h2>
+    <div id="team-known" style="display:none">
+      <div class="note ok" style="margin-bottom:12px">
+        Registered as <b id="team-name-shown"></b>. Your token is stored in this browser.
+      </div>
+      <div class="token-box"><code id="team-token"></code>
+        <button class="btn ghost small" id="copy-token">copy</button></div>
+      <p style="color:var(--faint);font-size:12.5px;margin:10px 0 0">
+        Keep this token — it authenticates the API. Lost tokens cannot be recovered;
+        you would have to register a new team name.
+      </p>
+      <div class="row" style="margin-top:12px">
+        <button class="btn ghost small" id="switch-team">register a different team</button>
+      </div>
+    </div>
+
+    <form id="team-form">
+      <label class="field"><span class="lab">Team name</span>
+        <input type="text" id="team-name" placeholder="e.g. Lattice Reducers" maxlength="48" required/>
+        <span class="hint">Shown publicly on the leaderboard. 2–48 characters, must be unique.</span>
+      </label>
+      <label class="field"><span class="lab">Contact <span style="color:var(--faint)">(optional)</span></span>
+        <input type="text" id="team-contact" placeholder="email or handle, for the organizers" maxlength="200"/>
+      </label>
+      <button class="btn" type="submit">Register team</button>
+    </form>
+  </div>
+
+  <!-- ── 2. agent ──────────────────────────────────────────────────────── -->
+  <div class="panel" id="agent-panel">
+    <h2>2 · Agent</h2>
+    <div class="tabs">
+      <button class="on" data-kind="upload">Upload code</button>
+      <button data-kind="remote">Remote endpoint</button>
+    </div>
+
+    <div id="pane-upload">
+      <p style="color:var(--dim);font-size:13.5px;margin:0 0 14px">
+        A <code class="inline">.py</code> file, or a <code class="inline">.zip</code> with
+        <code class="inline">agent.py</code> at its top level. It must define:
+      </p>
+      <pre class="block">def solve(files, meta=None):
+    <span class="c"># files = {"n.txt": "...", "e.txt": "...", "c.txt": "..."}</span>
+    <span class="c"># meta  = {"gen": 0, "title": ..., "story": ..., "hints": [...]}</span>
+    return "flag{...}"   <span class="c"># or None if you cannot solve it</span></pre>
+      <div class="row" style="margin:12px 0 16px">
+        <a class="btn ghost small" href="/api/template" download>Download starter agent</a>
+        <a class="btn ghost small" href="/docs">Full contract &amp; limits</a>
+      </div>
+      <label class="field"><span class="lab">Agent name</span>
+        <input type="text" id="up-name" placeholder="e.g. rsa-toolkit-v3" maxlength="64"/>
+        <span class="hint">Just a label so you can tell your submissions apart.</span>
+      </label>
+      <label class="field"><span class="lab">Agent file</span>
+        <input type="file" id="up-file" accept=".py,.zip"/>
+      </label>
+      <button class="btn" id="do-upload">Submit agent</button>
+    </div>
+
+    <div id="pane-remote" style="display:none">
+      <p style="color:var(--dim);font-size:13.5px;margin:0 0 14px">
+        Keep your agent on your own hardware. The arena POSTs each challenge as JSON and
+        reads <code class="inline">{"flag": "..."}</code> back. Use this if you need Sage,
+        a GPU, or a private model.
+      </p>
+      <pre class="block">POST https://your-host/solve
+{"challenge_id": "...", "gen": 3, "files": {"n.txt": "..."}, "hints": [...]}
+→ 200  {"flag": "flag{...}"}        <span class="c"># or {"flag": null} if stuck</span></pre>
+      <div class="note warn" style="margin:12px 0 16px">
+        Remote agents are ranked on depth only — their wall-clock runs on your hardware,
+        not the arena's, so the leaderboard marks them and does not compare their times.
+      </div>
+      <label class="field"><span class="lab">Agent name</span>
+        <input type="text" id="rm-name" placeholder="e.g. sage-lattice-box" maxlength="64"/></label>
+      <label class="field"><span class="lab">Endpoint URL</span>
+        <input type="url" id="rm-url" placeholder="https://your-host/solve"/></label>
+      <label class="field"><span class="lab">Bearer token <span style="color:var(--faint)">(optional)</span></span>
+        <input type="password" id="rm-token" placeholder="sent as Authorization: Bearer …" maxlength="200"/>
+        <span class="hint">So your endpoint can verify the calls really come from the arena.</span>
+      </label>
+      <button class="btn" id="do-remote">Register endpoint</button>
+    </div>
+
+    <div id="agent-list" style="margin-top:18px"></div>
+  </div>
+
+  <!-- ── 3. match ──────────────────────────────────────────────────────── -->
+  <div class="panel" id="match-panel">
+    <h2>3 · Run a match</h2>
+    <label class="field"><span class="lab">Agent</span>
+      <select id="pick-agent"></select></label>
+    <label class="field"><span class="lab">Track</span>
+      <select id="pick-track"></select>
+      <span class="hint" id="track-hint"></span></label>
+    <button class="btn" id="do-match">Start match →</button>
+    <p style="color:var(--faint);font-size:12.5px;margin:12px 0 0">
+      One match at a time per team. Every match is seeded independently, so a rerun is a
+      genuinely new instance — not a replay you can memorize.
+    </p>
+  </div>
+
+  <div class="panel" id="my-matches-panel" style="display:none">
+    <h2>Your matches</h2>
+    <div id="my-matches"></div>
+  </div>
+</div>
+
+<footer class="foot">Stuck? The <a href="/docs">rules page</a> has the full agent contract and sandbox limits.</footer>
+
+<script src="/static/arena.js"></script>
+<script>
+mountNav('/submit');
+
+let CONFIG = null;
+
+async function boot() {
+  CONFIG = await api('/api/config');
+  const sel = $('#pick-track');
+  sel.innerHTML = Object.values(CONFIG.tracks)
+    .map(t => `<option value="${esc(t.key)}">${esc(t.label)}</option>`).join('');
+  sel.value = localStorage.getItem('arena.track') || 'crypto';
+  sel.onchange = showTrackHint;
+  showTrackHint();
+  paintTeam();
+  if (Auth.get()) { await loadAgents(); await loadMatches(); }
+}
+
+function showTrackHint() {
+  const t = CONFIG.tracks[$('#pick-track').value];
+  if (!t) return;
+  $('#track-hint').textContent =
+    `${t.rungs.length} rungs, ending at "${t.rungs[t.rungs.length - 1]}" · ` +
+    `${t.per_gen_timeout_s}s per attempt · ${Math.round(t.match_budget_s / 60)} min budget`;
+}
+
+/* ---- team ---- */
+function paintTeam() {
+  const team = Auth.get();
+  $('#team-form').style.display = team ? 'none' : '';
+  $('#team-known').style.display = team ? '' : 'none';
+  $('#agent-panel').style.opacity = team ? '1' : '.45';
+  $('#match-panel').style.opacity = team ? '1' : '.45';
+  $$('#agent-panel input, #agent-panel button, #match-panel select, #match-panel button')
+    .forEach(el => { el.disabled = !team; });
+  if (team) {
+    $('#team-name-shown').textContent = team.name;
+    $('#team-token').textContent = team.token;
+  }
+}
+
+$('#team-form').onsubmit = async (e) => {
+  e.preventDefault();
+  const name = $('#team-name').value.trim();
+  if (!name) return;
+  try {
+    const team = await api('/api/teams', { method: 'POST', body: { name, contact: $('#team-contact').value } });
+    Auth.set(team);
+    paintTeam(); mountedNavRefresh();
+    toast(`Team "${team.name}" registered`, 'ok');
+    await loadAgents();
+  } catch (err) { toast(err.message, 'bad'); }
+};
+
+$('#copy-token').onclick = async () => {
+  try { await navigator.clipboard.writeText(Auth.get().token); toast('Token copied', 'ok'); }
+  catch { toast('Select the token and copy it manually', 'bad'); }
+};
+
+$('#switch-team').onclick = () => {
+  if (!confirm('Forget this team token in this browser? Save it first — it cannot be recovered.')) return;
+  Auth.clear(); paintTeam(); mountedNavRefresh();
+};
+
+function mountedNavRefresh() {
+  const team = Auth.get();
+  $('.nav .who').innerHTML = team ? `team <b>${esc(team.name)}</b>` : 'not registered';
+}
+
+/* ---- tabs ---- */
+$$('.tabs button').forEach(btn => btn.onclick = () => {
+  $$('.tabs button').forEach(b => b.classList.toggle('on', b === btn));
+  const kind = btn.dataset.kind;
+  $('#pane-upload').style.display = kind === 'upload' ? '' : 'none';
+  $('#pane-remote').style.display = kind === 'remote' ? '' : 'none';
+});
+
+/* ---- agents ---- */
+$('#do-upload').onclick = async () => {
+  const file = $('#up-file').files[0];
+  if (!file) return toast('Choose a .py or .zip file first', 'bad');
+  const name = $('#up-name').value.trim() || file.name.replace(/\.(py|zip)$/i, '');
+  const q = new URLSearchParams({ kind: 'upload', name, filename: file.name });
+  const btn = $('#do-upload'); btn.disabled = true; btn.textContent = 'Uploading…';
+  try {
+    const agent = await api(`/api/agents?${q}`, { method: 'POST', raw: await file.arrayBuffer() });
+    toast(`Agent "${agent.name}" accepted (entry: ${agent.entry})`, 'ok');
+    $('#up-file').value = '';
+    await loadAgents();
+  } catch (err) { toast(err.message, 'bad'); }
+  finally { btn.disabled = false; btn.textContent = 'Submit agent'; }
+};
+
+$('#do-remote').onclick = async () => {
+  const url = $('#rm-url').value.trim();
+  if (!url) return toast('Enter your endpoint URL', 'bad');
+  try {
+    const agent = await api('/api/agents', { method: 'POST', body: {
+      kind: 'remote', name: $('#rm-name').value.trim() || 'remote-agent',
+      remote_url: url, remote_token: $('#rm-token').value } });
+    toast(`Endpoint registered as "${agent.name}"`, 'ok');
+    await loadAgents();
+  } catch (err) { toast(err.message, 'bad'); }
+};
+
+async function loadAgents() {
+  if (!Auth.get()) return;
+  const { agents } = await api('/api/agents');
+  $('#agent-list').innerHTML = agents.length ? `
+    <h2 style="margin-bottom:8px">Submitted agents</h2>
+    <table><tbody>${agents.map(a => `
+      <tr><td><b>${esc(a.name)}</b>
+        <span class="agent" style="display:block;color:var(--faint);font-size:12px;font-family:var(--mono)">
+          ${a.kind === 'remote' ? esc(a.remote_url) : `${esc(a.entry)} · ${(a.size_bytes / 1024).toFixed(1)} KB · ${esc((a.sha256 || '').slice(0, 12))}`}
+        </span></td>
+        <td style="width:90px"><span class="badge ${a.kind === 'remote' ? 'violet' : 'info'}">${esc(a.kind)}</span></td>
+        <td style="width:90px;color:var(--faint);font-size:12px">${fmtAgo(a.created_at)}</td>
+      </tr>`).join('')}</tbody></table>` : '';
+  $('#pick-agent').innerHTML = agents.map(a =>
+    `<option value="${esc(a.id)}">${esc(a.name)} (${esc(a.kind)})</option>`).join('')
+    || '<option value="">— submit an agent first —</option>';
+}
+
+/* ---- matches ---- */
+$('#do-match').onclick = async () => {
+  const agent_id = $('#pick-agent').value;
+  if (!agent_id) return toast('Submit an agent first', 'bad');
+  const btn = $('#do-match'); btn.disabled = true;
+  try {
+    const m = await api('/api/matches', { method: 'POST',
+      body: { agent_id, track: $('#pick-track').value } });
+    localStorage.setItem('arena.track', $('#pick-track').value);
+    toast('Match queued — opening the live view', 'ok');
+    location.href = `/match/${m.match_id}`;
+  } catch (err) { toast(err.message, 'bad'); btn.disabled = false; }
+};
+
+async function loadMatches() {
+  const team = Auth.get();
+  const { matches } = await api('/api/matches?limit=60');
+  const mine = matches.filter(m => m.team_name === team.name).slice(0, 10);
+  if (!mine.length) return;
+  $('#my-matches-panel').style.display = '';
+  $('#my-matches').innerHTML = `<table><tbody>${mine.map(m => `
+    <tr><td><a href="/match/${esc(m.id)}">${esc(m.track)} · ${esc(m.agent_name)}</a>
+      <span style="display:block;color:var(--faint);font-size:12px">${fmtAgo(m.created_at)}</span></td>
+      <td style="width:140px">${m.reached_gen >= 0
+        ? `<span class="badge ok">Gen-${m.reached_gen}</span>` : '<span class="badge">no solve</span>'}</td>
+      <td style="width:110px">${statusBadge(m.status)}</td></tr>`).join('')}</tbody></table>`;
+}
+
+boot().catch(e => toast(e.message, 'bad'));
+</script>
+</body>
+</html>

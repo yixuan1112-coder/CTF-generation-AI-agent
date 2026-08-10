@@ -4,6 +4,64 @@
 
 > 本项目只应用于本机、比赛基础设施或明确授权的隔离环境。不要用它攻击第三方系统。
 
+## 🏟️ AutoCTF Arena — 让真实队伍上传自己的 AI Agent 来打擂台
+
+**English:** teams upload their own AI agent, it climbs a ladder against its own private
+evolving challenge-maker, and the leaderboard ranks every team by how far it actually got.
+Full guide: **[ARENA.md](ARENA.md)**.
+
+本仓库不只是出题工具。`arena_platform/` 提供一个完整的比赛平台：每支队伍上传自己的 AI Agent，
+与专属的、会进化的出题 Agent 对抗，并按真实战绩排名。
+
+```bash
+python -m arena_platform.server --port 8090     # 启动比赛服务器
+# 浏览器打开 http://127.0.0.1:8090
+```
+
+| 页面 | 作用 |
+|---|---|
+| `/` | 排行榜、实时阶梯、进行中的比赛 |
+| `/submit` | 注册队伍、提交 Agent、开始比赛 |
+| `/match/<id>` | 逐级实时观战（SSE 推送）|
+| `/docs` | 选手手册：Agent 接口、限制、HTTP API |
+
+比赛规则：
+
+- 出题 Agent 部署 Gen-0；队伍 Agent 交出正确 Flag 后，出题 Agent **进化**成更难的攻击类别，
+  并在部署前用 `verify_spec` 实际运行 PoC 验证可解，然后重新部署。
+- 队伍 Agent 交不出 Flag、交错 Flag、崩溃或超时，本次攀爬结束。
+- **排名先看深度**：实际攻破的最高一级；同级再比总用时，最后比完成时间。
+
+两种参赛方式：
+
+1. **上传代码** —— 一个 `.py` 文件，或包含 `agent.py` 的 `.zip`。在服务器沙箱中运行
+   （无网络、CPU/内存/进程数硬限制、进程组可终止、环境变量已清理）。
+2. **远程接口** —— Agent 跑在自己的机器上（Sage、GPU、私有模型），只注册一个 URL，
+   平台把题目 POST 过去并读回 Flag。
+
+Agent 接口：
+
+```python
+def solve(files, meta=None):
+    # files: {"n.txt": "8281...", "e.txt": "3", "c.txt": "5512..."}
+    # meta:  {"challenge_id", "gen", "category", "title", "story", "hints"}
+    return "flag{...}"      # 解不出来就返回 None
+```
+
+先在本地调试，不需要注册也不需要排队：
+
+```bash
+python team_agent.py --selftest            # 用真实阶梯本地跑一遍
+python team_agent.py --enter --server http://ARENA_HOST:8090 --name "Your Team"
+```
+
+公平性保障：每场比赛使用独立随机种子，两支队伍不会拿到相同的模数或相同的 Flag，
+因此 Flag 无法互相传递；真实 Flag 只在服务端进程内比对，不会写进事件日志或 API 响应；
+Agent 代码也无法 import 本仓库，读不到出题器。
+
+对外开放前请使用 Docker 沙箱：`docker build -t autoctf-arena-agent:latest -f Dockerfile.agent .`
+详见 [ARENA.md](ARENA.md)。
+
 ## 主要能力
 
 - 10 个 CTF 方向、30 个审核题型、Easy/Medium/Hard 三档难度。
@@ -393,6 +451,12 @@ python -m ctf_factory.cli arena generated\web-query-injection-hard
 python -m unittest discover -s tests -v
 ```
 
+只运行比赛平台的测试：
+
+```powershell
+python -m unittest tests.test_arena -v
+```
+
 测试覆盖：
 
 - 30 个题型 × 3 个难度的生成和 Solver
@@ -402,6 +466,7 @@ python -m unittest discover -s tests -v
 - 运行时协议映射
 - Docker 实例路径边界
 - 选手 ZIP 中的 Flag 和 organizer 泄漏
+- 比赛平台：Agent 沙箱隔离、上传校验、排名顺序、并发领取、Flag 不泄漏、API 鉴权
 
 ## 十二、常见问题
 

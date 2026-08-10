@@ -1,0 +1,27 @@
+# Runner image for team-submitted agents.
+#
+# The arena mounts one match's working directory into a container built from this
+# image and runs the harness inside it with --network none. Nothing from this
+# repository is copied in: agents must ship whatever they need themselves.
+#
+#   docker build -t autoctf-arena-agent:latest -f Dockerfile.agent .
+#   ARENA_DOCKER_IMAGE=autoctf-arena-agent:latest ctf-arena --port 8090
+#
+# Add libraries here to widen what competitors may rely on — every team gets the
+# same image, so anything installed is available to everyone equally.
+FROM python:3.11-slim
+
+RUN pip install --no-cache-dir \
+        pycryptodome==3.20.0 \
+        sympy==1.13.3 \
+        gmpy2==2.2.1
+
+# The arena runs the container as the host user (--user), so the working
+# directory has to be writable by an arbitrary uid.
+RUN mkdir -p /work && chmod 777 /work
+WORKDIR /work
+
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 HOME=/tmp
+
+# The arena supplies the command; this default just documents the contract.
+CMD ["python", "-E", "-B", "_harness.py"]

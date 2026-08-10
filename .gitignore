@@ -9,3 +9,5 @@ exports/
 .ctf-agent/
 __pycache__/
 *.pyc
+.arena/
+examples/champion.zip

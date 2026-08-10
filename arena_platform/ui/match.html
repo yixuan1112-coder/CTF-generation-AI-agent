@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>AutoCTF Arena — Match</title>
+<link rel="stylesheet" href="/static/arena.css"/>
+</head>
+<body>
+<div class="wrap">
+  <div class="row" style="margin-bottom:6px">
+    <div class="eyebrow" id="track-label">match</div>
+    <span class="spacer" style="flex:1"></span>
+    <span id="status-badge"></span>
+  </div>
+  <h1 style="margin:2px 0 6px;font-size:26px" id="title">Loading match…</h1>
+  <p class="lead" style="margin:0 0 18px" id="subtitle"></p>
+
+  <div class="panel">
+    <h2>Ladder <span class="sub" id="ladder-sub"></span></h2>
+    <div class="ladder" id="ladder"></div>
+  </div>
+
+  <div class="panel" id="verdict-panel" style="display:none">
+    <div id="verdict"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Scoreline</h2>
+    <div class="stats">
+      <div class="stat"><div class="k">Deepest solve</div><div class="v gold" id="s-reached">—</div></div>
+      <div class="stat"><div class="k">Maker at</div><div class="v accent" id="s-maker">—</div></div>
+      <div class="stat"><div class="k">Agent time</div><div class="v" id="s-time">—</div></div>
+      <div class="stat"><div class="k">Score</div><div class="v ok" id="s-score">—</div></div>
+    </div>
+  </div>
+
+  <div class="grid side" style="margin-top:16px">
+    <div class="panel">
+      <h2>📡 Battle log</h2>
+      <div class="log" id="log"><div class="empty"><span class="spinner"></span> connecting…</div></div>
+    </div>
+    <div>
+      <div class="panel">
+        <h2>Current challenge <span class="sub">what the agent sees</span></h2>
+        <div id="challenge"><div class="empty">waiting for the first deploy</div></div>
+      </div>
+      <div class="panel">
+        <h2>Agent output <span class="sub">last attempt</span></h2>
+        <div id="agent-out"><div class="empty">no output yet</div></div>
+      </div>
+      <div class="panel">
+        <h2>Setup</h2>
+        <div id="setup" style="font-size:13px;color:var(--dim)"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<footer class="foot"><a href="/">← Leaderboard</a> · <a href="/submit">Enter another agent</a></footer>
+
+<script src="/static/arena.js"></script>
+<script>
+mountNav('');
+
+const MATCH_ID = location.pathname.split('/').filter(Boolean)[1];
+let RUNGS = [], SOLVED = -1, MAKER = 0, T0 = null, HELD = false;
+
+async function boot() {
+  if (!MATCH_ID) { $('#title').textContent = 'No match id in the URL'; return; }
+  let snapshot;
+  try { snapshot = await api(`/api/matches/${encodeURIComponent(MATCH_ID)}`); }
+  catch (err) { $('#title').textContent = 'Match not found'; toast(err.message, 'bad'); return; }
+
+  paintHeader(snapshot.match, snapshot.queue_position);
+  RUNGS = snapshot.match.rungs || [];
+  renderLadder($('#ladder'), RUNGS, { solvedMax: -1, makerGen: 0 });
+  $('#log').innerHTML = '';
+  stream();
+}
+
+function paintHeader(m, queuePos) {
+  $('#track-label').textContent = `${m.track} track`;
+  $('#title').innerHTML = `${esc(m.team_name)} <span style="color:var(--faint);font-weight:400">vs.</span> the challenge-maker`;
+  $('#subtitle').innerHTML =
+    `agent <code class="inline">${esc(m.agent_name)}</code> ` +
+    `<span class="badge ${m.agent_kind === 'remote' ? 'violet' : 'info'}">${esc(m.agent_kind)}</span>` +
+    (queuePos ? ` · queued at position ${queuePos}` : '');
+  $('#status-badge').innerHTML = statusBadge(m.status);
+  paintStats(m);
+}
+
+function paintStats(m) {
+  if (m.reached_gen >= 0) $('#s-reached').textContent = `Gen-${m.reached_gen}`;
+  if (m.agent_gen != null) $('#s-maker').textContent = `Gen-${m.agent_gen}`;
+  if (m.solve_seconds) $('#s-time').textContent = fmtSecs(m.solve_seconds);
+  if (m.score) $('#s-score').textContent = m.score;
+}
+
+/* ---- live stream ---- */
+function stream() {
+  const src = new EventSource(`/api/matches/${encodeURIComponent(MATCH_ID)}/stream`);
+  src.onmessage = (msg) => {
+    let e;
+    try { e = JSON.parse(msg.data); } catch { return; }
+    if (e.evt === 'stream.end') { src.close(); return; }
+    if (T0 === null) T0 = e.ts;
+    handle(e);
+  };
+  src.onerror = () => {
+    // The stream ends when the match does; only warn while it is still open.
+    if (src.readyState === EventSource.CLOSED) return;
+  };
+}
+
+function line(cls, html, ts) {
+  const host = $('#log');
+  if (host.querySelector('.empty')) host.innerHTML = '';
+  const el = document.createElement('div');
+  el.className = `ln ${cls}`;
+  el.innerHTML = `<span class="t">${clock(ts, T0)}</span><span class="m">${html}</span>`;
+  host.prepend(el);
+  while (host.children.length > 400) host.removeChild(host.lastChild);
+}
+
+function handle(e) {
+  const p = e.payload || {};
+  switch (e.evt) {
+    case 'match.started': {
+      RUNGS = p.rungs || RUNGS;
+      renderLadder($('#ladder'), RUNGS, { solvedMax: -1, makerGen: 0 });
+      $('#ladder-sub').textContent = `${p.track_label} · seed ${p.seed}`;
+      $('#status-badge').innerHTML = statusBadge('running');
+      const iso = p.isolation || {};
+      $('#setup').innerHTML = `
+        <div class="row" style="gap:6px;margin-bottom:8px">
+          <span class="badge ${iso.strength === 'strong' ? 'ok' : 'info'}">${esc(iso.backend || '—')}</span>
+          ${iso.network_namespace ? '<span class="badge ok">no network</span>' : ''}
+          <span class="badge">${p.per_gen_timeout_s}s / attempt</span>
+          <span class="badge">${Math.round(p.match_budget_s / 60)} min budget</span>
+        </div>
+        <div style="color:var(--faint);font-size:12.5px">${esc(iso.note || '')}</div>
+        <div style="color:var(--faint);font-size:12.5px;margin-top:8px">
+          Seed <code class="inline">${p.seed}</code> is unique to this match — no other
+          team receives these files or this flag.</div>`;
+      line('dim', `match started · ${esc(p.team)} · agent <b>${esc(p.agent)}</b> (${esc(p.agent_kind)})`, e.ts);
+      break;
+    }
+    case 'challenge.deployed': {
+      MAKER = p.gen;
+      renderLadder($('#ladder'), RUNGS, { solvedMax: SOLVED, makerGen: MAKER });
+      $('#s-maker').textContent = `Gen-${p.gen}`;
+      $('#challenge').innerHTML = `
+        <div style="font-weight:600;margin-bottom:4px">${esc(p.title)}</div>
+        <div style="color:var(--dim);font-size:13.5px;margin-bottom:10px">${esc(p.story)}</div>
+        <div class="row" style="gap:6px;margin-bottom:10px">
+          <span class="badge gold">Gen-${p.gen}</span>
+          <span class="badge info">${esc(p.rung)}</span>
+        </div>
+        <table><tbody>${(p.files || []).map(f =>
+          `<tr><td style="font-family:var(--mono);font-size:12.5px">${esc(f.name)}</td>
+               <td class="num" style="width:80px;color:var(--faint)">${f.bytes} B</td></tr>`).join('')}</tbody></table>
+        ${(p.hints || []).length ? `<div style="margin-top:10px;color:var(--faint);font-size:12.5px">
+          hints: ${p.hints.map(h => esc(h)).join(' · ')}</div>` : ''}`;
+      line('deploy', `🤖 challenge-maker deploys <b>Gen-${p.gen}</b> — ${esc(p.rung)}`, e.ts);
+      break;
+    }
+    case 'agent.attempt': {
+      const out = [];
+      if (p.stdout) out.push(`<div style="color:var(--faint);font-size:11px;margin-bottom:3px">stdout</div>
+                              <pre class="block" style="max-height:150px">${esc(p.stdout)}</pre>`);
+      if (p.stderr) out.push(`<div style="color:var(--bad);font-size:11px;margin:8px 0 3px">stderr</div>
+                              <pre class="block" style="max-height:150px">${esc(p.stderr)}</pre>`);
+      $('#agent-out').innerHTML = out.join('') ||
+        `<div class="empty">agent produced no output at Gen-${p.gen}</div>`;
+      const verdict = p.produced_flag ? 'returned a flag' : (p.error ? esc(p.error) : 'returned nothing');
+      line('dim', `⚙️ agent ran ${fmtSecs(p.seconds)} on Gen-${p.gen} — ${verdict}`, e.ts);
+      break;
+    }
+    case 'solve': {
+      SOLVED = Math.max(SOLVED, p.gen);
+      renderLadder($('#ladder'), RUNGS, { solvedMax: SOLVED, makerGen: MAKER });
+      $('#s-reached').textContent = `Gen-${p.gen}`;
+      $('#s-score').textContent = p.score;
+      line('solve', `🚩 <b>solved Gen-${p.gen}</b> (${esc(p.rung)}) in ${fmtSecs(p.seconds)} · +${p.points} pts`
+        + (p.evolved ? ' <span style="color:var(--warn)">→ the maker evolves</span>' : ''), e.ts);
+      break;
+    }
+    case 'agent.stuck':
+      HELD = true;
+      renderLadder($('#ladder'), RUNGS, { solvedMax: SOLVED, makerGen: MAKER, held: true });
+      line('stuck', `🛑 stuck at Gen-${p.gen} (${esc(p.rung)}) — ${esc(p.reason)}`, e.ts);
+      break;
+    case 'submit.wrong':
+      line('stuck', `✗ wrong flag at Gen-${p.gen} (${esc(p.rung)})`, e.ts);
+      break;
+    case 'match.timeout':
+      line('stuck', `⏱ match budget of ${p.budget_s}s exhausted`, e.ts);
+      break;
+    case 'evolve.rejected':
+      line('stuck', `the challenge-maker could not verify a rung past Gen-${p.gen}`, e.ts);
+      break;
+    case 'ladder.cleared':
+      line('final', `🏆 <b>ladder cleared</b> at Gen-${p.gen} (${esc(p.rung)})`, e.ts);
+      break;
+    case 'match.finished':
+      finish(p, e.ts);
+      break;
+  }
+}
+
+function finish(p, ts) {
+  $('#status-badge').innerHTML = statusBadge('done');
+  $('#s-reached').textContent = p.reached_gen >= 0 ? `Gen-${p.reached_gen}` : '—';
+  $('#s-maker').textContent = `Gen-${p.agent_gen}`;
+  $('#s-time').textContent = fmtSecs(p.solve_seconds);
+  $('#s-score').textContent = p.score;
+  renderLadder($('#ladder'), RUNGS, {
+    solvedMax: p.reached_gen, makerGen: p.agent_gen, held: p.outcome !== 'cleared' });
+
+  const won = p.outcome === 'cleared';
+  $('#verdict-panel').style.display = '';
+  $('#verdict').innerHTML = `
+    <div style="display:flex;gap:14px;align-items:flex-start">
+      <div style="font-size:30px;line-height:1">${won ? '🏆' : '🛡️'}</div>
+      <div>
+        <div style="font-size:17px;font-weight:600;color:${won ? 'var(--gold)' : 'var(--fg)'};margin-bottom:4px">
+          ${won ? 'Your agent cleared the ladder' : 'The challenge-maker held'}
+        </div>
+        <div style="color:var(--dim);font-size:14px">${esc(p.summary)}</div>
+        <div class="row" style="margin-top:12px">
+          ${outcomeBadge(p.outcome)}
+          <a class="btn ghost small" href="/">See where that ranks →</a>
+          <a class="btn ghost small" href="/submit">Improve the agent and rerun</a>
+        </div>
+      </div>
+    </div>`;
+  line('final', `🏁 ${esc(p.summary)}`, ts);
+}
+
+boot().catch(e => toast(e.message, 'bad'));
+</script>
+</body>
+</html>

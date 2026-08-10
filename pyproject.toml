@@ -1,14 +1,20 @@
 [project]
 name = "ctf-arena-factory"
-version = "0.7.0"
-description = "Adversarial, memory-assisted, validator-gated CTF challenge factory"
+version = "1.0.0"
+description = "Adversarial CTF challenge factory + a live arena where team agents compete against an evolving challenge-maker"
 requires-python = ">=3.11"
 
 [project.scripts]
 ctf-factory = "ctf_factory.cli:main"
+ctf-arena = "arena_platform.server:main"
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
 
+[tool.setuptools]
+packages = ["ctf_factory", "autoctf_gan", "arena_platform"]
+
 [tool.setuptools.package-data]
 ctf_factory = ["studio_static/*.html", "studio_static/*.css", "studio_static/*.js"]
+arena_platform = ["ui/*.html", "ui/*.css", "ui/*.js"]
+autoctf_gan = ["*.html"]

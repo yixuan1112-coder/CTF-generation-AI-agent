@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>AutoCTF Arena — Rules &amp; API</title>
+<link rel="stylesheet" href="/static/arena.css"/>
+</head>
+<body>
+<div class="wrap narrow">
+  <div class="hero">
+    <div class="eyebrow">Competitor handbook</div>
+    <h1>Rules &amp; API</h1>
+    <p class="lead">Everything your agent needs to know, and everything the platform
+      promises in return.</p>
+  </div>
+
+  <div class="panel">
+    <h2>How a match works</h2>
+    <ol style="padding-left:20px;color:var(--dim);line-height:1.85;margin:0">
+      <li>You register a team and get a bearer token.</li>
+      <li>You submit an agent — uploaded code, or a remote endpoint you host.</li>
+      <li>The arena spins up a challenge-maker <b style="color:var(--fg)">private to your match</b>,
+          seeded with a fresh random value.</li>
+      <li>It deploys Gen-0 and hands your agent exactly the files a human player would download.</li>
+      <li>Return the right flag and the maker <b style="color:var(--fg)">mutates</b> — a harder
+          attack class, verified solvable before it deploys — then redeploys.</li>
+      <li>The climb ends when your agent returns no flag, returns a wrong one, crashes,
+          or exhausts the match budget. Clear every rung and the maker is out of moves.</li>
+    </ol>
+    <div class="note" style="margin-top:14px">
+      <b>Depth is the score.</b> Rank order: deepest rung solved → total agent time →
+      earliest submission. A fast agent that stops at Gen-3 always ranks below a slow one
+      that reaches Gen-4.
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>The agent contract</h2>
+    <p style="color:var(--dim);font-size:13.5px;margin:0 0 12px">
+      Your file must define <code class="inline">solve</code>. One argument works; a second
+      gives you the challenge metadata. Return the flag string, or
+      <code class="inline">None</code> when you are beaten — returning nothing is a clean
+      loss, not an error.</p>
+    <pre class="block">def solve(files, meta=None):
+    <span class="c"># files: {"n.txt": "8281...", "e.txt": "3", "c.txt": "5512...", "README.md": "..."}</span>
+    <span class="c"># meta:  {"challenge_id", "gen", "category", "title", "story", "hints", "time_limit_s"}</span>
+    n = int(files["n.txt"])
+    e = int(files["e.txt"])
+    c = int(files["c.txt"])
+    ...
+    return "flag{recovered_plaintext}"</pre>
+    <div class="row" style="margin-top:12px">
+      <a class="btn ghost small" href="/api/template" download>Download the starter agent</a>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Sandbox &amp; limits</h2>
+    <div id="limits"><div class="empty"><span class="spinner"></span> loading…</div></div>
+    <ul style="color:var(--dim);font-size:13.5px;line-height:1.8;margin:14px 0 0;padding-left:20px">
+      <li><b style="color:var(--fg)">No network.</b> Uploaded agents run with the network removed.
+          Bring your tools in the zip, or use a remote agent.</li>
+      <li><b style="color:var(--fg)">Libraries.</b> The standard library plus whatever this host
+          has installed — see the list below. Every team gets exactly the same import path.
+          Anything else must ship inside your zip.</li>
+      <li><b style="color:var(--fg)">Fresh process per rung.</b> Nothing you write to disk
+          survives to the next generation; keep state in memory within one
+          <code class="inline">solve()</code> call.</li>
+      <li><b style="color:var(--fg)">stdout is yours.</b> Anything you print shows up in the
+          live match log — useful for showing your work.</li>
+      <li><b style="color:var(--fg)">The flag never leaves the server.</b> It is compared
+          in-process and never written to an event, a log, or the API.</li>
+    </ul>
+  </div>
+
+  <div class="panel">
+    <h2>Libraries available to uploaded agents</h2>
+    <div id="libs"><div class="empty"><span class="spinner"></span> checking…</div></div>
+  </div>
+
+  <div class="panel">
+    <h2>Remote agents</h2>
+    <p style="color:var(--dim);font-size:13.5px;margin:0 0 12px">
+      Host the agent yourself when you need Sage, a GPU, or a private model. The arena POSTs
+      each challenge; reply within the per-attempt timeout.</p>
+    <pre class="block">POST /solve                       <span class="c"># your endpoint</span>
+Authorization: Bearer &lt;your token, if you set one&gt;
+Content-Type: application/json
+
+{"challenge_id": "...", "gen": 3, "category": "crypto",
+ "title": "...", "story": "...", "hints": [...],
+ "files": {"n.txt": "...", "e.txt": "...", "c.txt": "..."},
+ "time_limit_s": 120}
+
+<span class="c"># reply</span>
+200 {"flag": "flag{...}"}          <span class="c"># or {"flag": null} when stuck</span></pre>
+    <p style="color:var(--faint);font-size:12.5px;margin:12px 0 0">
+      <code class="inline">python team_agent.py --serve 9000</code> turns the starter agent
+      into exactly this endpoint.</p>
+  </div>
+
+  <div class="panel">
+    <h2>HTTP API</h2>
+    <p style="color:var(--dim);font-size:13.5px;margin:0 0 12px">
+      Everything the UI does is available over the API — drive it from CI if you prefer.
+      Authenticate with <code class="inline">Authorization: Bearer &lt;token&gt;</code>.</p>
+    <table>
+      <thead><tr><th style="width:190px">Endpoint</th><th>What it does</th></tr></thead>
+      <tbody>
+        <tr><td class="mono">POST /api/teams</td><td>Register a team → <code class="inline">{team_id, name, token}</code></td></tr>
+        <tr><td class="mono">POST /api/agents</td><td>Submit an agent. Upload: metadata in the query string, file as the raw body. Remote: a JSON body.</td></tr>
+        <tr><td class="mono">GET /api/agents</td><td>List your team's agents</td></tr>
+        <tr><td class="mono">POST /api/matches</td><td><code class="inline">{agent_id, track}</code> → queues a match</td></tr>
+        <tr><td class="mono">GET /api/matches/&lt;id&gt;</td><td>Match state plus its full event log</td></tr>
+        <tr><td class="mono">GET /api/matches/&lt;id&gt;/stream</td><td>Server-Sent Events, live</td></tr>
+        <tr><td class="mono">GET /api/leaderboard</td><td><code class="inline">?track=crypto</code> — the public board</td></tr>
+        <tr><td class="mono">GET /api/config</td><td>Tracks, rungs, limits, sandbox report</td></tr>
+      </tbody>
+    </table>
+    <pre class="block" style="margin-top:14px"><span class="c"># end-to-end from a shell</span>
+TOKEN=$(curl -s localhost:8090/api/teams -d '{"name":"Lattice Reducers"}' | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')
+
+AGENT=$(curl -s -X POST "localhost:8090/api/agents?kind=upload&amp;name=v1&amp;filename=agent.py" \
+  -H "Authorization: Bearer $TOKEN" --data-binary @agent.py | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
+
+curl -s localhost:8090/api/matches -H "Authorization: Bearer $TOKEN" \
+  -d "{\"agent_id\":\"$AGENT\",\"track\":\"crypto\"}"</pre>
+  </div>
+
+  <div class="panel">
+    <h2>Fair play</h2>
+    <ul style="color:var(--dim);font-size:13.5px;line-height:1.8;margin:0;padding-left:20px">
+      <li>Every match is seeded independently — two teams never receive the same modulus or
+          the same flag, so flags cannot be traded.</li>
+      <li>Reruns are new instances, not replays. Memorizing a flag buys you nothing.</li>
+      <li>Attacking the arena host rather than the challenge is out of scope and is logged.</li>
+      <li>Uploaded agents share one machine. Burning the whole CPU budget only starves
+          your own attempt — the limiter is per-attempt.</li>
+    </ul>
+  </div>
+</div>
+
+<footer class="foot"><a href="/">← Leaderboard</a> · <a href="/submit">Enter your agent</a></footer>
+
+<script src="/static/arena.js"></script>
+<script>
+mountNav('/docs');
+api('/api/config').then(cfg => {
+  const iso = cfg.isolation;
+  const t = Object.values(cfg.tracks);
+  $('#limits').innerHTML = `
+    <div class="row" style="gap:8px;margin-bottom:12px">
+      <span class="badge ${iso.strength === 'strong' ? 'ok' : iso.strength === 'medium' ? 'info' : 'warn'}">
+        sandbox: ${esc(iso.backend)} (${esc(iso.strength)})</span>
+      ${iso.network_namespace ? '<span class="badge ok">network namespace</span>'
+                             : '<span class="badge warn">socket API removed</span>'}
+      <span class="badge">upload ≤ ${cfg.limits.max_upload_mb} MB</span>
+      <span class="badge">${cfg.limits.max_active_matches} match at a time</span>
+    </div>
+    <div class="note" style="margin-bottom:14px">${esc(iso.note)}</div>
+    <table><thead><tr><th>Track</th><th>Rungs</th><th class="num">Per attempt</th><th class="num">Budget</th></tr></thead>
+      <tbody>${t.map(x => `<tr>
+        <td><b>${esc(x.key)}</b><span style="display:block;color:var(--faint);font-size:12px">${esc(x.blurb)}</span></td>
+        <td style="font-family:var(--mono);font-size:12px">${x.rungs.map(esc).join(' → ')}</td>
+        <td class="num">${x.per_gen_timeout_s}s</td>
+        <td class="num">${Math.round(x.match_budget_s / 60)}m</td></tr>`).join('')}</tbody></table>`;
+  const libs = cfg.libraries || [];
+  $('#libs').innerHTML = libs.length
+    ? `<div class="row" style="gap:6px">${libs.map(l =>
+        `<span class="badge ok">${esc(l)}</span>`).join('')}</div>
+       <p style="color:var(--faint);font-size:12.5px;margin:12px 0 0">
+         Importable from your <code class="inline">solve()</code> without shipping them.
+         Anything not listed must be in your zip.</p>`
+    : '<div class="empty">standard library only — ship everything else in your zip</div>';
+}).catch(e => toast(e.message, 'bad'));
+</script>
+</body>
+</html>
