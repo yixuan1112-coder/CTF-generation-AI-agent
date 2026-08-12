@@ -20,7 +20,10 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends gcc libc6-dev \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir pycryptodome==3.20.0
+# jsonschema is not optional: autoctf_gan/__init__.py imports generator, which
+# imports schema, which imports it at module level — so `python -m
+# autoctf_gan.service` fails on the first request without it.
+RUN pip install --no-cache-dir pycryptodome==3.20.0 jsonschema==4.23.0
 
 # The Boneh-Durfee rung needs a lattice reduction library. It is a source build
 # with heavy dependencies, so it is best-effort: crypto_ladder already drops that
@@ -44,6 +47,13 @@ USER maker
 WORKDIR /work
 
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PYTHONPATH=/srv HOME=/tmp
+
+# Build-time smoke test: import the whole package and actually build and verify a
+# composed challenge. A missing runtime dependency is a broken image, and it
+# should fail HERE rather than on the first request of the first match — which is
+# exactly how the jsonschema dependency was nearly shipped.
+COPY deploy/maker-smoketest.py /srv/maker-smoketest.py
+RUN python /srv/maker-smoketest.py
 
 # One JSON object in, one JSON object out. The arena supplies the request on stdin.
 ENTRYPOINT ["python", "-m", "autoctf_gan.service"]
