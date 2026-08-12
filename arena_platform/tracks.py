@@ -1,46 +1,108 @@
-"""Track definitions — which ladder a match climbs.
+"""Track definitions — which route a match climbs.
 
-A *track* wraps one of the `autoctf_gan` co-evolution ladders and describes it in
-the terms the leaderboard needs: how many rungs exist, what each rung is called,
-and how deep the challenge-maker can escalate before it runs out of moves.
+A *track* used to wrap one `autoctf_gan` ladder and describe it for the
+leaderboard: how many rungs exist and how deep the maker could escalate "before
+it runs out of moves". It cannot run out any more. A track now names a starting
+discipline, and the maker walks a CAMPAIGN from there:
 
-Crypto is the reference track: seven rungs, each shipping a real paired PoC that
-`verify_spec` executes before the rung is ever deployed, ending at Boneh-Durfee —
-a rung most attack toolkits cannot reach.
+    its own ladder  ->  a different discipline's ladder  ->  challenges it authors
+
+`rungs` is the bounded prefix of that route — the part the UI can draw as a fixed
+ladder. `endless` says whether an authoring tail follows it, in which case
+reaching the last bounded rung is a milestone, not the end of the match.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from functools import lru_cache
+
+from autoctf_gan.campaign import Campaign, default_campaign
+
+
+# What the MAKER can build, which stops being a question about this host as soon
+# as the maker runs in a container. `Arena` sets this from the maker's reported
+# capabilities at startup; None means "probe the host", the pre-container default.
+_MAKER_CAPABILITIES: dict | None = None
+
+
+def set_maker_capabilities(capabilities: dict | None) -> None:
+    """Plan routes against the toolchain that will actually build them."""
+    global _MAKER_CAPABILITIES
+    _MAKER_CAPABILITIES = dict(capabilities) if capabilities else None
+    _campaign.cache_clear()
+
+
+@lru_cache(maxsize=None)
+def _campaign(category: str, cross_track: bool, authoring: bool) -> Campaign:
+    """Cached: building one probes a toolchain, and Track reads it often."""
+    return default_campaign(start=category, cross_track=cross_track,
+                            authoring=authoring, capabilities=_MAKER_CAPABILITIES)
 
 
 @dataclass(frozen=True)
 class Track:
     key: str
     label: str
-    category: str                 # what autoctf_gan.competition._build expects
+    category: str                 # the discipline the campaign STARTS on
     blurb: str
-    rungs: list[str] = field(default_factory=list)
     per_gen_timeout_s: int = 120
     match_budget_s: int = 900
     # A track is playable only if its flag can be recovered from the files the
     # agent receives. Service-style challenges cannot be, until the arena grows
-    # an instance broker — see `unavailable_reason`.
-    available: bool = True
-    unavailable_reason: str = ""
+    # an instance broker — see `offered_reason`.
+    offered: bool = True
+    offered_reason: str = ""
+    cross_track: bool = True
+    authoring: bool = True
+
+    @property
+    def available(self) -> bool:
+        """Offered by design AND buildable on this host."""
+        return self.offered and self.campaign.start_available
+
+    @property
+    def unavailable_reason(self) -> str:
+        if not self.offered:
+            return self.offered_reason
+        if not self.campaign.start_available:
+            return (f"This host cannot build the starting ladder: "
+                    + "; ".join(self.campaign.describe_skipped()))
+        return ""
+
+    @property
+    def campaign(self) -> Campaign:
+        return _campaign(self.category, self.cross_track, self.authoring)
+
+    @property
+    def rungs(self) -> list[str]:
+        """The bounded prefix: every rung that exists before authoring starts."""
+        campaign = self.campaign
+        return campaign.rung_names(campaign.bounded_rungs)
 
     @property
     def max_gen(self) -> int:
-        return max(0, len(self.rungs) - 1)
+        """Index of the last bounded rung. NOT a ceiling when `endless` is true."""
+        return max(0, self.campaign.bounded_rungs - 1)
+
+    @property
+    def endless(self) -> bool:
+        return self.campaign.has_authoring_tail
+
+    @property
+    def route(self) -> list[dict]:
+        """Segment-by-segment description, for the match view and the docs page."""
+        return [{"key": s.key, "label": s.label, "category": s.category,
+                 "blurb": s.blurb, "rungs": list(s.rungs), "authoring": s.unbounded}
+                for s in self.campaign.segments]
+
+    @property
+    def skipped_segments(self) -> list[str]:
+        return self.campaign.describe_skipped()
 
     def rung_name(self, gen: int) -> str:
-        if not self.rungs:
-            return f"gen-{gen}"
-        return self.rungs[min(gen, len(self.rungs) - 1)]
-
-
-_LADDER_CACHE: dict[str, list[str]] = {}
-
-FALLBACK_CRYPTO = ["smalle", "hastad", "commonmod", "wiener", "fermat", "pollard"]
+        if gen < 0:
+            return "nothing"
+        return self.campaign.rung_name(gen)
 
 
 def warmup() -> None:
@@ -49,55 +111,13 @@ def warmup() -> None:
     fpylll installs a signal handler when it is imported, and Python only permits
     that from the main thread. If a match worker or an HTTP handler triggers the
     first import instead, it raises, crypto_ladder quietly drops the Boneh-Durfee
-    rung, and the arena would serve a six-rung ladder while advertising seven —
-    the boss fight the whole contest is built around would simply vanish. Calling
-    this at startup puts fpylll in sys.modules so every later thread import is a
-    no-op.
+    rung, and the arena would serve a shorter ladder than it advertises — the boss
+    fight the whole contest is built around would simply vanish. Building the
+    campaigns here puts fpylll in sys.modules so every later thread import is a
+    no-op, and warms the lru_cache off the main thread's result.
     """
-    _crypto_rungs()
-
-
-def _crypto_rungs() -> list[str]:
-    """Read the live ladder so the UI never drifts from the engine.
-
-    The Boneh-Durfee rung is appended by crypto_ladder only when fpylll imports,
-    so this is resolved at runtime rather than hardcoded — and cached, so worker
-    threads reuse whatever the main thread resolved.
-    """
-    if "crypto" in _LADDER_CACHE:
-        return list(_LADDER_CACHE["crypto"])
-    try:
-        from autoctf_gan.crypto_ladder import LADDER_NAMES
-        rungs = list(LADDER_NAMES)
-    except Exception as exc:                      # surface it: a silently short
-        import sys                                # ladder looks like a rule change
-        print(f"[arena] crypto ladder unavailable ({type(exc).__name__}: {exc}); "
-              "falling back to the six-rung ladder", file=sys.stderr)
-        rungs = list(FALLBACK_CRYPTO)
-    import threading
-    if threading.current_thread() is threading.main_thread():
-        _LADDER_CACHE["crypto"] = list(rungs)     # only trust a main-thread result
-    return rungs
-
-
-def _web_rungs() -> list[str]:
-    """Read the SSTI ladder from the engine.
-
-    Each rung bans the token the previous bypass used, so the rung's real
-    identity is the technique it forces you to. The ladder CLAMPS at its last
-    entry — asking for a deeper generation returns the same challenge again — so
-    the arena must stop exactly here or it would redeploy an identical rung while
-    telling the team it had evolved.
-    """
-    try:
-        from autoctf_gan.web import PAYLOAD_LADDER
-        return [f"bypass-{name}" for name, _ in PAYLOAD_LADDER]
-    except Exception as exc:
-        import sys
-        print(f"[arena] web ladder unavailable ({type(exc).__name__}: {exc})",
-              file=sys.stderr)
-        return ["bypass-flag", "bypass-values", "bypass-items",
-                "bypass-dictsort", "bypass-popitem"]
+    for track in all_tracks().values():
+        _ = track.rungs
 
 
 def all_tracks() -> dict[str, Track]:
@@ -106,10 +126,9 @@ def all_tracks() -> dict[str, Track]:
             key="crypto",
             label="Crypto — RSA attack ladder",
             category="crypto",
-            blurb=("Each rung rotates to a harder attack CLASS, not a bigger modulus. "
-                   "Every rung ships a verified proof-of-concept, so every rung is "
-                   "provably solvable — by someone."),
-            rungs=_crypto_rungs(),
+            blurb=("Starts by rotating to a harder attack CLASS each rung, not a bigger "
+                   "modulus. Past the ladder the maker composes verified attacks into "
+                   "challenges no rung covers, so there is no last challenge."),
             per_gen_timeout_s=120,
             match_budget_s=900,
         ),
@@ -118,13 +137,11 @@ def all_tracks() -> dict[str, Track]:
             label="Reverse — compiled crackme",
             category="reverse",
             blurb=("A generated C crackme whose key schedule gains a round every "
-                   "generation. No natural ceiling, so the arena caps it at six. "
-                   "Be aware this ladder discriminates weakly: rounds only affect "
-                   "how the password reaches the keystream state, and an agent "
-                   "that solves for the state directly never touches the password "
-                   "— so every rung falls at the same speed. Use crypto to "
-                   "separate strong agents."),
-            rungs=[f"R={i + 1}" for i in range(6)],
+                   "generation. Be aware this ladder discriminates weakly: rounds only "
+                   "affect how the password reaches the keystream state, and an agent "
+                   "that solves for the state directly never touches the password — so "
+                   "every rung falls at the same speed. The crypto rungs that follow "
+                   "are what separate strong agents."),
             per_gen_timeout_s=180,
             match_budget_s=1200,
         ),
@@ -135,11 +152,12 @@ def all_tracks() -> dict[str, Track]:
             blurb=("A Flask SSTI service behind a denylist. Every generation bans "
                    "the token the previous bypass used, so each rung forces a new "
                    "technique."),
-            rungs=_web_rungs(),
             per_gen_timeout_s=120,
             match_budget_s=900,
-            available=False,
-            unavailable_reason=(
+            offered=False,
+            cross_track=False,
+            authoring=False,
+            offered_reason=(
                 "This is a service challenge: the flag is injected into the running "
                 "container as $FLAG at deploy time, so it exists nowhere in the files "
                 "an agent receives. Booting the supplied app.py locally yields only "

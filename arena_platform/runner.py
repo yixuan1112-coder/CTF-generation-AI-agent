@@ -70,11 +70,13 @@ class MatchEngine:
     """Owns the worker pool and knows how to run a single match end to end."""
 
     def __init__(self, store: Store, upload_root: Path | str,
-                 workers: int = 2, backend: str = "auto"):
+                 workers: int = 2, backend: str = "auto",
+                 maker_backend: str = "auto"):
         self.store = store
         self.upload_root = Path(upload_root)
         self.bus = EventBus()
         self.backend = backend
+        self.maker_backend = maker_backend
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
         self._worker_count = max(1, workers)
@@ -143,6 +145,8 @@ class MatchEngine:
             "agent": match["agent_name"], "agent_kind": agent_row["kind"],
             "track": track.key, "track_label": track.label, "rungs": track.rungs,
             "max_gen": track.max_gen, "seed": match["seed"],
+            "route": track.route, "endless": track.endless,
+            "skipped_segments": track.skipped_segments,
             "isolation": backend_report() if agent_row["kind"] == "upload" else
                          {"backend": "remote", "note": "agent runs on the team's own host"},
             "per_gen_timeout_s": track.per_gen_timeout_s,
@@ -150,12 +154,23 @@ class MatchEngine:
         })
 
         from autoctf_gan.competition import Competition
-        comp = Competition(category=track.category, seed=match["seed"],
-                           evolve_on=1, max_gen=track.max_gen, verify_deploy=True)
+        from autoctf_gan.maker import for_arena
+        # One maker per match. A container maker builds each challenge in a fresh
+        # container, so a wedged build costs this match and nothing else.
+        maker = for_arena(backend=self.maker_backend, start=track.category,
+                          cross_track=track.cross_track, authoring=track.authoring)
+        emit("maker.ready", maker.describe())
+        # max_gen=None on an endless track: the bounded rungs are a milestone, not
+        # a ceiling, and only the match budget stops the climb.
+        comp = Competition(seed=match["seed"], evolve_on=1,
+                           max_gen=None if track.endless else track.max_gen,
+                           verify_deploy=True, maker=maker)
         team_key = comp.register(match["team_name"])["team_id"]
 
         reached_gen, score, solve_seconds = -1, 0, 0.0
         outcome, error = "", ""
+        authoring_announced = False
+        archived_by_gen: dict[int, str] = {}
         deadline = time.monotonic() + track.match_budget_s
 
         while True:
@@ -166,14 +181,30 @@ class MatchEngine:
 
             challenge = comp.current(team_key)
             gen = challenge["gen"]
+            segment = track.campaign.locate(gen)[0]
             emit("challenge.deployed", {
                 "gen": gen, "rung": track.rung_name(gen),
+                "segment": segment.key, "segment_label": segment.label,
+                "discipline": segment.category, "authored": segment.unbounded,
                 "challenge_id": challenge["challenge_id"],
                 "title": challenge["title"], "story": challenge["story"],
                 "hints": challenge["hints"],
                 "files": [{"name": n, "bytes": len(c)}
                           for n, c in (challenge["files"] or {}).items()],
             })
+
+            if segment.unbounded:
+                # An authored challenge exists only because this team pushed the
+                # maker past every bounded rung. Keep it before the match ends.
+                archived = self.store.archive_challenge(
+                    spec=comp.spec, match_id=match["id"], team_name=match["team_name"],
+                    track=track.key, solved=False)
+                if archived:
+                    archived_by_gen[gen] = archived["id"]
+                    emit("library.archived", {
+                        "gen": gen, "entry_id": archived["id"],
+                        "title": comp.spec.title,
+                        "plan_source": comp.spec.mechanics.get("plan_source", "catalog")})
 
             run = client.attempt(challenge)
             emit("agent.attempt", {
@@ -199,6 +230,8 @@ class MatchEngine:
                 emit("submit.wrong", {"gen": gen, "rung": track.rung_name(gen)})
                 break
 
+            if gen in archived_by_gen:
+                self.store.mark_library_solved(archived_by_gen[gen])
             reached_gen = max(reached_gen, gen)
             solve_seconds += run.seconds
             score += POINTS_BASE + POINTS_PER_GEN * gen
@@ -210,7 +243,7 @@ class MatchEngine:
                                     solve_seconds=round(solve_seconds, 3),
                                     agent_gen=comp.gen)
 
-            if gen >= track.max_gen:
+            if gen >= track.max_gen and not track.endless:
                 outcome = "cleared"
                 emit("ladder.cleared", {"gen": gen, "rung": track.rung_name(gen)})
                 break
@@ -219,6 +252,14 @@ class MatchEngine:
                 error = "the challenge-maker could not verify a harder rung"
                 emit("evolve.rejected", {"gen": gen})
                 break
+            if track.endless and not authoring_announced and \
+                    track.campaign.locate(comp.gen)[0].unbounded:
+                authoring_announced = True
+                emit("maker.authoring", {
+                    "gen": comp.gen, "rung": track.rung_name(comp.gen),
+                    "note": ("every bounded rung has fallen — from here the maker "
+                             "composes challenges no ladder contains, and each one "
+                             "is verified solvable before it is deployed")})
 
         summary = _summarize(outcome, reached_gen, comp.gen, track)
         # Every finished climb is a result, including a crash — the team's agent
@@ -259,10 +300,16 @@ class _Counter:
 def _summarize(outcome: str, reached: int, agent_gen: int, track: Track) -> str:
     reached_name = track.rung_name(reached) if reached >= 0 else "nothing"
     agent_name = track.rung_name(agent_gen)
+    past_ladders = reached >= track.max_gen and track.endless
     if outcome == "cleared":
         return (f"Ladder cleared. The agent solved every rung up to Gen-{reached} "
                 f"({reached_name}) — the challenge-maker ran out of moves.")
     if outcome == "timeout":
+        if past_ladders:
+            return (f"Match budget exhausted at Gen-{agent_gen} ({agent_name}). "
+                    f"The agent cleared every bounded rung and was still solving "
+                    f"challenges the maker composed on the spot — deepest solve "
+                    f"Gen-{reached} ({reached_name}).")
         return (f"Match budget exhausted at Gen-{agent_gen} ({agent_name}). "
                 f"Deepest solve: Gen-{reached} ({reached_name}).")
     if outcome == "wrong_flag":
@@ -275,6 +322,10 @@ def _summarize(outcome: str, reached: int, agent_gen: int, track: Track) -> str:
         return f"The challenge-maker could not verify a rung past Gen-{agent_gen}."
     if reached < 0:
         return f"No solve. The challenge-maker held at Gen-0 ({track.rung_name(0)})."
+    if past_ladders:
+        return (f"Out-authored. The agent cleared every bounded rung, then stalled on "
+                f"a challenge the maker composed for it: deepest solve Gen-{reached} "
+                f"({reached_name}), maker now at Gen-{agent_gen} ({agent_name}).")
     return (f"Out-evolved. Deepest solve Gen-{reached} ({reached_name}); the "
             f"challenge-maker escalated to Gen-{agent_gen} ({agent_name}) and held.")
 

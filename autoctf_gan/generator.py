@@ -205,5 +205,13 @@ def generate_spec(
     return offline_brain(**kwargs), "offline"
 
 
-def _default_llm_call(system: str, user: str) -> str:  # pragma: no cover
-    raise RuntimeError("wire your provider SDK here (Anthropic/OpenAI-compatible)")
+def _default_llm_call(system: str, user: str) -> str:
+    """OpenAI-compatible completion, using the repo's existing env convention.
+
+    This used to raise "wire your provider SDK here", which meant `_llm_available`
+    could report a key was present and then the call would fail on every attempt —
+    the retry budget burned and the offline brain answered anyway. It is now the
+    same client the maker's design brain uses.
+    """
+    from .design import DesignBrain
+    return DesignBrain().complete(system, user)

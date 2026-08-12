@@ -20,56 +20,56 @@ import secrets
 import threading
 import time
 
+from .campaign import Campaign
+from .maker import MakerError
 from .verify import verify_spec
-
-
-def _build(category: str, seed: int, gen: int):
-    if category == "crypto":
-        from .crypto_ladder import gen_crypto_ladder
-        return gen_crypto_ladder(seed=seed, generation=gen)
-    if category == "reverse":
-        from .native import gen_compiled_crackme
-        return gen_compiled_crackme(seed=seed, rounds=gen + 1)
-    if category == "web":
-        from .web import gen_web_ssti
-        return gen_web_ssti(seed=seed, generation=gen)
-    from .generator import offline_brain
-    return offline_brain(category="misc", challenge_type="layered",
-                         difficulty="medium", seed=seed, archetype_id="misc.layered")
-
-
-def _mutate(category: str, spec):
-    if category == "crypto":
-        from .crypto_ladder import mutate_crypto
-        return mutate_crypto(spec)
-    if category == "reverse":
-        from .native import mutate_native
-        return mutate_native(spec)
-    if category == "web":
-        from .web import mutate_web
-        return mutate_web(spec)
-    import random
-    from .evolve import mutate
-    return mutate(spec, [], random.Random(f"{spec.seed}:{spec.lineage.generation}"))
 
 
 class Competition:
     def __init__(self, category: str = "crypto", seed: int = 1234,
-                 evolve_on: int = 1, max_gen: int = 6, verify_deploy: bool = True):
-        self.category = category
+                 evolve_on: int = 1, max_gen: int | None = 6, verify_deploy: bool = True,
+                 flag_secret: str | None = None, campaign: Campaign | None = None,
+                 cross_track: bool = True, authoring: bool = True,
+                 maker=None):
         self.seed = seed
         self.evolve_on = evolve_on          # solves of current variant that trigger evolution
-        self.max_gen = max_gen
+        self.max_gen = max_gen              # None -> only the match budget stops the climb
         self.verify_deploy = verify_deploy
+        # Per-match secret. Flags derive from it, so they cannot be recomputed
+        # from the challenge metadata the agent receives — and it never leaves
+        # this object: not into a spec field, an event, or an API response.
+        self.flag_secret = secrets.token_hex(16) if flag_secret is None else flag_secret
+        # Where the maker RUNS — this process or a container. The default keeps
+        # the original in-process behaviour; the arena injects a DockerMaker.
+        if maker is None:
+            from .maker import InProcessMaker
+            maker = InProcessMaker(campaign) if campaign else InProcessMaker(
+                start=category, cross_track=cross_track, authoring=authoring)
+        self.maker = maker
+        # The route, not a single category: the maker climbs a ladder, switches
+        # discipline, then starts authoring. `category` picks where it starts.
+        self.campaign = maker.campaign
         self.lock = threading.RLock()
         self.teams: dict[str, dict] = {}
         self.events: list[dict] = []
         self._t0 = time.monotonic()
-        self.spec = _build(category, seed, 0)
         self.gen = 0
+        # Gen-0 is not verified: it is the maker's own opening move, and every
+        # ladder's first rung is a fixed, tested construction.
+        self.spec = self.maker.build(seed=seed, generation=0,
+                                     flag_secret=self.flag_secret, verify=False).spec
         self.solvers_of_current: set[str] = set()
         self.first_blood_taken = False
         self._log_deploy()
+
+    @property
+    def category(self) -> str:
+        """The discipline the maker is CURRENTLY on — it changes mid-match now."""
+        return self.campaign.locate(self.gen)[0].category
+
+    @property
+    def segment(self):
+        return self.campaign.locate(self.gen)[0]
 
     # ---- helpers -----------------------------------------------------------
     def _attack(self) -> str:
@@ -77,6 +77,10 @@ class Competition:
 
     def _log(self, evt: str, **kw) -> None:
         self.events.append({"evt": evt, "t": round(time.monotonic() - self._t0, 2), **kw})
+
+    def _recent_classes(self) -> list[str]:
+        """What the maker has already deployed — steers the design brain off repeats."""
+        return [e["attack"] for e in self.events if e["evt"] == "challenge.deployed"]
 
     def _log_deploy(self) -> None:
         s = self.spec
@@ -126,20 +130,43 @@ class Competition:
                       points=pts, first_blood=first)
 
             evolved = False
-            if len(self.solvers_of_current) >= self.evolve_on and self.gen < self.max_gen:
+            capped = self.max_gen is not None and self.gen >= self.max_gen
+            if len(self.solvers_of_current) >= self.evolve_on and not capped:
                 evolved = self._evolve()
             return {"ok": True, "correct": True, "points": pts, "first_blood": first,
                     "evolved": evolved, "gen": self.gen}
 
     def _evolve(self) -> bool:
-        child = _mutate(self.category, self.spec)
+        target = self.gen + 1
+        previous = self.campaign.locate(self.gen)[0]
+        try:
+            result = self.maker.build(
+                seed=self.seed, generation=target, flag_secret=self.flag_secret,
+                parent_spec_id=self.spec.spec_id,
+                target_solve_rate=self.spec.target_solve_rate,
+                recent=self._recent_classes(), verify=self.verify_deploy)
+        except ValueError:                              # bounded campaign exhausted
+            self._log("campaign.exhausted", gen=self.gen)
+            return False
+        except MakerError as exc:                       # container died, timed out, absent
+            self._log("maker.failed", gen=self.gen, reason=str(exc))
+            return False
+        child = result.spec
         if self.verify_deploy:
-            v = verify_spec(child)                      # never deploy an unsolvable variant
+            # The maker verifies where it builds; only re-run the gate if it did not.
+            v = result.verdict or verify_spec(child)    # never deploy an unsolvable variant
             if not v.valid:
                 self._log("evolve.rejected", reason=v.reason)
                 return False
         self.spec = child
-        self.gen = child.lineage.generation
+        self.gen = target
+        current = self.campaign.locate(target)[0]
+        if current.key != previous.key:
+            # A discipline change is a bigger event than a rung: the team's agent
+            # is about to be handed a different KIND of problem.
+            self._log("segment.changed", gen=target, frm=previous.label,
+                      to=current.label, category=current.category,
+                      authoring=current.unbounded)
         self.solvers_of_current = set()
         self.first_blood_taken = False
         self._log_deploy()
@@ -153,10 +180,15 @@ class Competition:
 
     def status(self) -> dict:
         with self.lock:
+            segment = self.segment
             return {"category": self.category, "gen": self.gen, "max_gen": self.max_gen,
                     "challenge_id": self.spec.spec_id, "attack": self._attack(),
                     "solvers_of_current": len(self.solvers_of_current),
-                    "teams": len(self.teams)}
+                    "teams": len(self.teams),
+                    "segment": segment.key, "segment_label": segment.label,
+                    "authoring": segment.unbounded,
+                    "bounded_rungs": self.campaign.bounded_rungs,
+                    "skipped_segments": self.campaign.describe_skipped()}
 
 
 class CompetitionHost:

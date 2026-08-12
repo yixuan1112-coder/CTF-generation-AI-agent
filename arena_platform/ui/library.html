@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>AutoCTF Arena — Challenge Library</title>
+<link rel="stylesheet" href="/static/arena.css"/>
+</head>
+<body>
+<div class="wrap">
+  <div class="hero">
+    <div class="eyebrow">Authored during real matches</div>
+    <h1>Challenges the maker invented</h1>
+    <p class="lead">
+      Every challenge here exists because a team's agent cleared every bounded rung and
+      pushed the maker into authoring mode. It chained verified attack classes into
+      something no ladder contains, proved the result solvable, and deployed it. These are
+      the survivors — kept after the match that produced them ended.
+    </p>
+    <div class="row">
+      <a class="btn" href="/submit">Enter your agent →</a>
+      <a class="btn ghost" href="/">Leaderboard</a>
+      <a class="btn ghost" href="/docs">Rules &amp; API</a>
+    </div>
+  </div>
+
+  <div class="panel" style="margin-top:24px">
+    <div class="row" style="margin-bottom:14px">
+      <select id="source" style="max-width:260px">
+        <option value="">All designers</option>
+        <option value="llm">Designed by a model</option>
+        <option value="catalog">Enumerated from the catalogue</option>
+      </select>
+      <span class="badge" id="count-badge">loading…</span>
+      <span class="spacer" style="flex:1"></span>
+      <span class="badge" id="brain-badge"></span>
+    </div>
+    <div id="list"><div class="empty"><span class="spinner"></span> loading…</div></div>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g,
+  (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+async function loadConfig() {
+  try {
+    const cfg = await (await fetch("/api/config")).json();
+    const brain = cfg.design_brain || {};
+    $("brain-badge").textContent = brain.configured
+      ? `design brain: ${brain.model}` : "design brain: OFFLINE (catalogue only)";
+    $("brain-badge").className = "badge " + (brain.configured ? "violet" : "");
+  } catch (e) { /* the badge is decoration; the list is the page */ }
+}
+
+async function load() {
+  const source = $("source").value;
+  const url = "/api/library?limit=100" + (source ? `&source=${source}` : "");
+  let data;
+  try {
+    data = await (await fetch(url)).json();
+  } catch (e) {
+    $("list").innerHTML = `<div class="empty">could not reach the arena: ${esc(e.message)}</div>`;
+    return;
+  }
+  $("count-badge").textContent = `${data.total} authored`;
+  const entries = data.entries || [];
+  if (!entries.length) {
+    $("list").innerHTML = `<div class="empty">
+      Nothing yet. The maker only authors once an agent has cleared every bounded rung —
+      until some agent gets that far, this shelf stays empty.</div>`;
+    return;
+  }
+  $("list").innerHTML = entries.map(render).join("");
+}
+
+function render(e) {
+  const stages = (e.stages || []).length
+    ? e.stages.map((s) => `<span class="badge">${esc(s)}</span>`).join(" → ")
+    : `<span class="badge">${esc(e.attack_class)}</span>`;
+  const hints = (e.hints || []).map((h) => `<li>${esc(h)}</li>`).join("");
+  const files = (e.file_list || []).map(
+    (f) => `<li><code>${esc(f.name)}</code> <span class="sub">${f.bytes} B</span></li>`).join("");
+  const designer = e.plan_source === "llm"
+    ? `<span class="badge violet">designed by a model</span>`
+    : `<span class="badge">catalogue</span>`;
+  const beaten = e.solved_in_match
+    ? `<span class="badge">solved in its match</span>`
+    : `<span class="badge amber">never solved</span>`;
+  return `
+  <div class="panel" style="margin:0 0 14px">
+    <h2 style="margin-bottom:6px">${esc(e.title)}</h2>
+    <div class="row" style="gap:8px;margin-bottom:10px">
+      ${designer} ${beaten}
+      <span class="badge">depth ${e.depth}</span>
+      <span class="badge">rank ${e.rank}</span>
+      <span class="badge">Gen-${e.generation}</span>
+    </div>
+    <p style="color:var(--dim);margin:0 0 12px">${esc(e.story)}</p>
+    <div style="margin-bottom:12px">${stages}</div>
+    ${e.designer_note ? `<p class="sub" style="margin:0 0 12px">${esc(e.designer_note)}</p>` : ""}
+    <div class="grid" style="gap:18px">
+      <div>
+        <h3 style="font-size:13px;color:var(--faint);margin:0 0 6px">HINTS</h3>
+        <ul style="margin:0;padding-left:18px;color:var(--dim);font-size:13.5px">${hints}</ul>
+      </div>
+      <div>
+        <h3 style="font-size:13px;color:var(--faint);margin:0 0 6px">FILES</h3>
+        <ul style="margin:0;padding-left:18px;color:var(--dim);font-size:13.5px">${files}</ul>
+      </div>
+    </div>
+    <div class="row" style="margin-top:14px;gap:8px">
+      <a class="btn ghost" href="/api/library/${esc(e.id)}/download">Download package</a>
+      <input id="flag-${esc(e.id)}" placeholder="flag{…}" style="max-width:280px"/>
+      <button class="btn" onclick="submitFlag('${esc(e.id)}')">Submit</button>
+      <span id="verdict-${esc(e.id)}" class="sub"></span>
+    </div>
+    <p class="sub" style="margin:10px 0 0">
+      Authored against ${esc(e.team_name || "a team")} · solved ${e.solve_count} time(s) here
+    </p>
+  </div>`;
+}
+
+async function submitFlag(id) {
+  const verdict = $(`verdict-${id}`);
+  const flag = ($(`flag-${id}`).value || "").trim();
+  if (!flag) { verdict.textContent = "enter a flag first"; return; }
+  verdict.textContent = "checking…";
+  try {
+    const r = await fetch(`/api/library/${id}/submit`, {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({flag}),
+    });
+    const data = await r.json();
+    verdict.textContent = data.correct ? "✅ correct" : "❌ not the flag";
+    verdict.style.color = data.correct ? "var(--ok, #4ade80)" : "var(--faint)";
+    if (data.correct) load();
+  } catch (e) {
+    verdict.textContent = `error: ${e.message}`;
+  }
+}
+
+$("source").addEventListener("change", load);
+loadConfig();
+load();
+</script>
+</body>
+</html>

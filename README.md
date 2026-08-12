@@ -23,14 +23,26 @@ python -m arena_platform.server --port 8090     # 启动比赛服务器
 | `/` | 排行榜、实时阶梯、进行中的比赛 |
 | `/submit` | 注册队伍、提交 Agent、开始比赛 |
 | `/match/<id>` | 逐级实时观战（SSE 推送）|
+| `/library` | **题库**：出题 Agent 在真实比赛中创作出来的题目，可浏览、下载、提交 Flag |
 | `/docs` | 选手手册：Agent 接口、限制、HTTP API |
+
+题库只收录出题 Agent **自己创作**的题（即打穿全部阶梯后进入创作模式产出的复合题），
+落库内容与选手当时拿到的完全一致，只额外保存 `sha256(flag)` 用于校验提交——不存真实
+Flag，也不存官方 Solver。
 
 比赛规则：
 
-- 出题 Agent 部署 Gen-0；队伍 Agent 交出正确 Flag 后，出题 Agent **进化**成更难的攻击类别，
-  并在部署前用 `verify_spec` 实际运行 PoC 验证可解，然后重新部署。
+- 出题 Agent 部署 Gen-0；队伍 Agent 交出正确 Flag 后，出题 Agent **升级**并在部署前用
+  `verify_spec` 实际运行 PoC 验证可解，然后重新部署。
+- 升级分三个阶段，由 `autoctf_gan/campaign.py` 里的 **campaign** 路线决定：
+  1. **爬阶梯** —— 在当前赛道内轮换到更难的攻击类别；
+  2. **跨赛道** —— 本赛道阶梯爬完后切换到另一个学科的阶梯；
+  3. **创作** —— 所有阶梯都被打穿后，出题 Agent 开始**自己出新题**：把已验证的攻击类别
+     串成多阶段复合题（破 A 得到密钥 → 解开信封 → 破 B 拿 Flag）。这一段**没有上限**。
 - 队伍 Agent 交不出 Flag、交错 Flag、崩溃或超时，本次攀爬结束。
 - **排名先看深度**：实际攻破的最高一级；同级再比总用时，最后比完成时间。
+
+出题 Agent 不再会"无棋可走"。打穿阶梯不是终点，只是它开始创作的起点。
 
 两种参赛方式：
 
@@ -57,11 +69,53 @@ python team_agent.py --selftest            # 用真实阶梯本地跑一遍
 python team_agent.py --enter --server http://ARENA_HOST:8090 --name "Your Team"
 ```
 
-公平性保障：每场比赛使用独立随机种子，两支队伍不会拿到相同的模数或相同的 Flag，
-因此 Flag 无法互相传递；真实 Flag 只在服务端进程内比对，不会写进事件日志或 API 响应；
-Agent 代码也无法 import 本仓库，读不到出题器。
+公平性保障：
 
-对外开放前请使用 Docker 沙箱：`docker build -t autoctf-arena-agent:latest -f Dockerfile.agent .`
+- 每场比赛使用独立随机种子**和一个独立的 per-match secret**。Flag 由
+  `(secret, seed, generation, 攻击类别)` 共同派生，所以：
+  - 两支队伍拿不到相同的 Flag，Flag 无法互相传递；
+  - **同一场比赛里每一级的 Flag 也各不相同**，解出 Gen-0 再重放并不能爬阶梯。
+- `challenge_id` 里**不含种子**，也不含 Flag 的任何哈希片段，因此无法从题面元数据反推 Flag。
+- per-match secret 不写进任何 spec 字段、事件日志或 API 响应，只存在于服务端进程内。
+- 真实 Flag 只在服务端进程内比对；Agent 代码也无法 import 本仓库，读不到出题器。
+
+> 这几条在 `tests/test_authoring.py::FlagIsolationTests` 中有回归测试。早期版本的 Flag
+> 只由种子派生、且种子印在 `challenge_id` 上，一个不读任何题目文件的 Agent 即可满分通关。
+
+### 容器化：外层只收文件起容器，出题和 LLM 都在容器内
+
+两个镜像，各管一半：
+
+```bash
+docker build -t autoctf-arena-agent:latest -f Dockerfile.agent .   # 跑选手 Agent
+docker build -t autoctf-maker:latest       -f Dockerfile.maker .   # 跑出题 Agent
+python -m arena_platform.server --maker-backend docker --port 8090
+```
+
+出题容器的协议是 stdin 进一个 JSON、stdout 出一个 JSON（`python -m autoctf_gan.service`），
+且**无状态**：代数、种子、per-match secret 每次由外层指定，所以卡死或崩溃只损失一个容器。
+两样东西因此进了容器：
+
+- **`verify_spec` 要执行生成出来的 solver 代码**。以前它在宿主机上以子进程运行；现在跑在
+  只读根文件系统、drop 全部 capabilities、`no-new-privileges`、tmpfs 工作目录、内存/PID/CPU
+  受限的容器里。
+- **LLM API Key**。它是容器的环境变量，不进协议、不进 spec、不进事件日志。
+
+`--maker-backend docker` **不会回落**——要求容器化的部署会在启动时直接失败，而不是悄悄用宿主机跑。
+`auto` 会回落并如实上报，`/api/config` 里能看到当前是哪种。
+
+**网络是不对称的，这是有意的**：只用目录枚举出题时容器 `--network none` 完全断网；开了 LLM
+设计脑就必须能访问模型端点——**模型进环路就等于出网进环路**。这个取舍写在 `autoctf_gan/maker.py`
+里显式决定，不是某个默认值的副作用。
+
+镜像里装了 `gcc`。所以出题 agent 容器化之后，"宿主机能不能编译 C"就是个错问题了——外层改为
+向容器查询能力（`op=capabilities`），按**镜像的**工具链规划赛道路线。宿主机没有编译器，
+reverse 赛道照样能开。
+
+> 外层 arena 进程本身**不**容器化，因为它要启动容器。把它塞进容器意味着挂载 Docker Socket，
+> 而本项目明确拒绝这么做（见文末安全边界）。arena 跑在宿主机或独立 Runner 上，
+> 进容器的是出题 agent 和选手 agent。
+
 详见 [ARENA.md](ARENA.md)。
 
 ## 主要能力

@@ -23,7 +23,8 @@ import random
 
 from Crypto.Util.number import bytes_to_long, inverse, isPrime
 
-from .crypto import _flag_for, _gen_prime
+from .crypto import _gen_prime
+from .identity import challenge_flag, public_slug
 from .models import ChainStep, ChallengeSpec, Lineage, OfficialSolver
 
 # integer k-th root, shared by the cube-root PoCs
@@ -61,9 +62,14 @@ def _keypair(rng, bits, e):
 
 def _spec(*, seed, generation, rank, challenge_type, story, vuln, solution,
           hints, artifacts, solver_src, flag, archetype_id, parent_spec_id,
-          mutation_ops, attack_class, target_solve_rate, extra_solver_files=None):
+          mutation_ops, attack_class, target_solve_rate, flag_secret="",
+          extra_solver_files=None):
     expected = hashlib.sha256(flag.encode()).hexdigest()
-    slug = f"crypto-{attack_class}-{seed:06d}-g{generation}"
+    # The id is a one-way digest: it used to be f"crypto-{cls}-{seed:06d}-g{gen}"
+    # plus sha256(flag)[:8], which printed the seed the flag derives from — and
+    # half the flag's hash — into the metadata handed to the competing agent.
+    slug = public_slug(base=f"crypto-{attack_class}", seed=seed,
+                       generation=generation, secret=flag_secret)
     solver_files = {"solver.py": solver_src, **(extra_solver_files or {})}
     return ChallengeSpec(
         slug=slug, title=f"RSA {attack_class.title()} (Gen-{generation})",
@@ -71,7 +77,7 @@ def _spec(*, seed, generation, rank, challenge_type, story, vuln, solution,
         story=story, vulnerability=vuln, intended_solution=solution, hints=hints,
         delivery="crypto", seed=seed,
         mechanics={"attack_class": attack_class, "rank": rank},
-        flag=flag, spec_id=f"{slug}-{expected[:8]}",
+        flag=flag, spec_id=slug,
         lineage=Lineage(archetype_id=archetype_id, generation=generation,
                         parent_spec_id=parent_spec_id, mutation_ops=mutation_ops or [],
                         seed=seed),
@@ -85,16 +91,19 @@ def _spec(*, seed, generation, rank, challenge_type, story, vuln, solution,
     )
 
 
-def _common(seed, generation, archetype_id, parent_spec_id, mutation_ops, tsr):
+def _common(seed, generation, archetype_id, parent_spec_id, mutation_ops, tsr,
+            flag_secret=""):
     # seed/generation are passed positionally to the builder; keep them out here
     return dict(archetype_id=archetype_id, parent_spec_id=parent_spec_id,
-                mutation_ops=mutation_ops, target_solve_rate=tsr)
+                mutation_ops=mutation_ops, target_solve_rate=tsr,
+                flag_secret=flag_secret)
 
 
 # --- rank 0: small-e cube root ---------------------------------------------
 def gen_smalle(seed, generation, **kw):
     rng = random.Random(f"smalle:{seed}:{generation}")
-    flag = _flag_for(seed)
+    flag = challenge_flag(kind="smalle", seed=seed, generation=generation,
+                          secret=kw.get("flag_secret", ""))
     m = bytes_to_long(flag.encode())
     e = 3
     p, q, n, phi = _keypair(rng, 1024, e)   # big n so m^3 < n (no reduction)
@@ -115,7 +124,8 @@ def gen_smalle(seed, generation, **kw):
 # --- rank 1: Håstad broadcast (e=3, three moduli) --------------------------
 def gen_hastad(seed, generation, **kw):
     rng = random.Random(f"hastad:{seed}:{generation}")
-    flag = _flag_for(seed)
+    flag = challenge_flag(kind="hastad", seed=seed, generation=generation,
+                          secret=kw.get("flag_secret", ""))
     m = bytes_to_long(flag.encode())
     e = 3
     ns, cs = [], []
@@ -146,7 +156,8 @@ def gen_hastad(seed, generation, **kw):
 # --- rank 2: common modulus -------------------------------------------------
 def gen_commonmod(seed, generation, **kw):
     rng = random.Random(f"commonmod:{seed}:{generation}")
-    flag = _flag_for(seed)
+    flag = challenge_flag(kind="commonmod", seed=seed, generation=generation,
+                          secret=kw.get("flag_secret", ""))
     m = bytes_to_long(flag.encode())
     e1, e2 = 3, 5
     while True:
@@ -182,7 +193,8 @@ def gen_commonmod(seed, generation, **kw):
 def gen_wiener_rung(seed, generation, **kw):
     from .crypto import _WIENER_SOLVER
     rng = random.Random(f"wiener-rung:{seed}:{generation}")
-    flag = _flag_for(seed)
+    flag = challenge_flag(kind="wiener", seed=seed, generation=generation,
+                          secret=kw.get("flag_secret", ""))
     m = bytes_to_long(flag.encode())
     p = _gen_prime(rng, 256); q = _gen_prime(rng, 256)
     n = p * q; phi = (p - 1) * (q - 1)
@@ -214,7 +226,8 @@ def _next_prime(x):
 
 def gen_fermat(seed, generation, **kw):
     rng = random.Random(f"fermat:{seed}:{generation}")
-    flag = _flag_for(seed)
+    flag = challenge_flag(kind="fermat", seed=seed, generation=generation,
+                          secret=kw.get("flag_secret", ""))
     m = bytes_to_long(flag.encode())
     e = 65537
     while True:
@@ -262,7 +275,8 @@ def _smooth_prime(rng, bits, B):
 
 def gen_pollard(seed, generation, **kw):
     rng = random.Random(f"pollard:{seed}:{generation}")
-    flag = _flag_for(seed)
+    flag = challenge_flag(kind="pollard", seed=seed, generation=generation,
+                          secret=kw.get("flag_secret", ""))
     m = bytes_to_long(flag.encode())
     e = 65537
     B = 150
@@ -346,7 +360,8 @@ def gen_boneh_durfee(seed, generation, **kw):
 
     from . import lattice
     rng = random.Random(f"bonehdurfee:{seed}:{generation}")
-    flag = _flag_for(seed)
+    flag = challenge_flag(kind="bonehdurfee", seed=seed, generation=generation,
+                          secret=kw.get("flag_secret", ""))
     m = bytes_to_long(flag.encode())
     nbits = 512
     while True:
@@ -399,18 +414,33 @@ def gen_crypto_ladder(*, seed: int, generation: int = 0,
                       archetype_id: str = "crypto.ladder",
                       parent_spec_id: str | None = None,
                       mutation_ops: list[str] | None = None,
-                      target_solve_rate: float = 0.05) -> ChallengeSpec:
-    rung = min(generation, len(CRYPTO_LADDER) - 1)
-    builder = CRYPTO_LADDER[rung]
+                      target_solve_rate: float = 0.05,
+                      flag_secret: str = "") -> ChallengeSpec:
+    """Build the rung for `generation`, or AUTHOR a new challenge past the ladder.
+
+    This used to clamp — `min(generation, len(CRYPTO_LADDER) - 1)` — so asking for
+    a deeper generation redeployed the last rung verbatim and the maker was out of
+    moves. Past the last rung it now hands off to `compose`, which builds a
+    challenge no single rung covers by chaining verified attack classes.
+    """
+    if generation >= len(CRYPTO_LADDER):
+        from .compose import gen_composed
+        return gen_composed(seed=seed, generation=generation,
+                            archetype_id=archetype_id, parent_spec_id=parent_spec_id,
+                            mutation_ops=mutation_ops,
+                            target_solve_rate=target_solve_rate,
+                            flag_secret=flag_secret)
+    builder = CRYPTO_LADDER[generation]
     return builder(seed, generation, **_common(seed, generation, archetype_id,
                                                parent_spec_id, mutation_ops,
-                                               target_solve_rate))
+                                               target_solve_rate, flag_secret))
 
 
-def mutate_crypto(parent: ChallengeSpec) -> ChallengeSpec:
+def mutate_crypto(parent: ChallengeSpec, flag_secret: str = "") -> ChallengeSpec:
     """Rotate to the next (harder) attack class; re-pairs the PoC (P1)."""
     return gen_crypto_ladder(seed=parent.seed, generation=parent.lineage.generation + 1,
                              archetype_id=parent.lineage.archetype_id,
                              parent_spec_id=parent.spec_id,
                              mutation_ops=["rotate_attack_class"],
-                             target_solve_rate=parent.target_solve_rate)
+                             target_solve_rate=parent.target_solve_rate,
+                             flag_secret=flag_secret)

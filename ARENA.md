@@ -171,16 +171,103 @@ The ladder itself is sound and its rungs verify; it needs an instance broker, no
 a fix.
 
 Rung lists are read from the engine at startup, not hardcoded, so the board can
-never advertise a rung the generator cannot build. `crypto` and `web` both clamp at
-their last entry and the tracks stop exactly there; `reverse` has no natural
-ceiling, so the arena caps it at six rounds.
+never advertise a rung the generator cannot build.
+
+A track is no longer one ladder. It names a starting discipline, and the maker
+walks a **campaign** (`autoctf_gan/campaign.py`) from there:
+
+1. **climb** — rotate to a harder attack class within the discipline
+2. **cross-track** — when that ladder ends, switch to another discipline's ladder
+3. **author** — when every bounded ladder is exhausted, compose verified attack
+   classes into challenges no ladder contains. This segment has no end.
+
+`track.rungs` is the bounded prefix — the part the UI draws as a fixed ladder —
+and `track.endless` says whether authoring follows it. Clearing the last bounded
+rung is a milestone, not the end of the match: the maker keeps going and the
+match ends on the budget, a wrong flag, or a crash.
+
+Segments this host cannot build are dropped with a stated reason rather than
+deployed and rejected (a match stalling because there is no `gcc` looks like a
+broken maker, not a missing compiler). If the *starting* discipline is the one
+that cannot build, the track is withdrawn entirely — cross-tracking is an
+escalation, never a substitution, so a team that entered `reverse` is never
+quietly handed crypto rungs.
 
 `crypto` is the reference track: every rung ships a real paired proof-of-concept that
 `verify_spec` **executes** before the rung is allowed to deploy, so no team is ever handed
 an unsolvable challenge. The Boneh-Durfee rung only appears when `fpylll` is installed.
+Authored compositions pass the identical gate — the PoC is assembled from the same
+`rsa_stages` functions that built the challenge, and it must recover the flag before
+the challenge is deployed.
 
 `examples/champion_agent/` is a worked agent that clears the whole crypto ladder — the
-answer to the starter agent's missing lattice attack.
+answer to the starter agent's missing lattice attack. It is also the demonstration of
+why the ladder needed a tail: it solves every bounded rung and then stalls on the first
+challenge the maker composes for it.
+
+### Where the challenge-maker runs
+
+The maker is a container image. The outer platform keeps only the two jobs it
+should have — take the upload, start the container — and everything that makes a
+challenge happens inside:
+
+```bash
+docker build -t autoctf-maker:latest -f Dockerfile.maker .
+python -m arena_platform.server --maker-backend docker --port 8090
+```
+
+The protocol is one JSON object in, one JSON object out
+(`python -m autoctf_gan.service`), and it is stateless: the host names the seed,
+the generation and the per-match secret on every request, so a wedged or crashed
+build costs one container instead of the arena. Two things move inside by doing
+this:
+
+* **`verify_spec` executes a generated solver.** On the host that was a
+  subprocess with the host's filesystem and network. In the container it runs
+  read-only, with all capabilities dropped, `no-new-privileges`, a tmpfs work
+  directory, and memory/PID/CPU caps.
+* **The LLM API key.** It is an environment variable on the container, never a
+  field in the protocol and never written into a spec or an event.
+
+`--maker-backend docker` **refuses to fall back**. A deployment that requires
+containerization fails at startup rather than quietly running the maker on the
+host; `auto` falls back and says so, and `/api/config` reports which is live.
+
+**The network asymmetry is real and deliberate.** A catalogue-only maker needs no
+network and runs `--network none`. A maker with a design brain has to reach the
+model endpoint and therefore cannot be disconnected — an LLM in the loop is
+egress in the loop. The choice is made explicitly in `autoctf_gan/maker.py` and
+reported by `describe()`, rather than falling out of a default.
+
+The image also decides what the arena can offer. It ships `gcc`, so once the
+maker is containerized "can this host compile C?" is the wrong question — the
+arena asks the container (`op=capabilities`) and plans each track's route against
+the image's toolchain. An arena on a host with no compiler can still run the
+reverse ladder.
+
+> The arena process itself is **not** containerized here, because it starts
+> containers. Running it inside one would mean mounting the Docker socket, which
+> this project refuses to do (see the security boundary in README). Run the arena
+> on the host or on a dedicated runner; the maker and the team agents are what go
+> in containers.
+
+### The design brain
+
+`autoctf_gan/design.py` optionally puts a model in the authoring loop. It decides
+two things — the ORDER of attack classes in a composition, and the prose — and
+nothing else. Stage names are resolved against the reviewed `STAGES` catalogue by
+`Plan.validate()`, so an invented class is a rejected plan rather than a build
+step; the key material and the exploit both come from reviewed code. A missing
+key, a timeout, a malformed reply or prose that leaks the answer all fall back to
+the deterministic catalogue, so the brain can cost variety but never a match.
+
+```bash
+export OPENAI_API_KEY=...        # or LLM_API_KEY
+export LLM_MODEL=gpt-5-mini      # LLM_BASE_URL for an OpenAI-compatible endpoint
+export AUTOCTF_DESIGN=catalog    # pin the deterministic catalogue (CI, reproducible runs)
+```
+
+`/api/config` reports which mode is live under `design_brain`.
 
 ---
 

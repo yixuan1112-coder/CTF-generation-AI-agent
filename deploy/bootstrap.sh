@@ -75,6 +75,12 @@ fi
 say "Building the agent sandbox image"
 docker build -q -t autoctf-arena-agent:latest -f "$HOME_DIR/Dockerfile.agent" "$HOME_DIR"
 
+say "Building the challenge-maker image"
+# The maker builds challenges and runs verify_spec, which EXECUTES a generated
+# solver. In this image that happens read-only, with capabilities dropped. The
+# image also ships gcc, so the reverse ladder works even if the host has none.
+docker build -q -t autoctf-maker:latest -f "$HOME_DIR/Dockerfile.maker" "$HOME_DIR"
+
 say "Installing the service"
 install -m 0644 "$HOME_DIR/deploy/arena.service" /etc/systemd/system/arena.service
 systemctl daemon-reload
@@ -96,15 +102,18 @@ systemctl reload caddy || systemctl restart caddy
 
 say "Verifying"
 sleep 3
-ISO=$("$HOME_DIR/.venv/bin/python" - <<'PY' 2>/dev/null || echo "unavailable"
+REPORT=$("$HOME_DIR/.venv/bin/python" - <<'PY' 2>/dev/null || echo "unavailable|unavailable"
 import json, urllib.request
 d = json.loads(urllib.request.urlopen("http://127.0.0.1:8090/api/config", timeout=10).read())
-i = d["isolation"]
-print(f"{i['backend']} / {i['strength']}")
+i, m = d["isolation"], d.get("maker", {})
+print(f"{i['backend']} / {i['strength']}|{m.get('backend', '?')} / network: {m.get('network', '?')}")
 PY
 )
+ISO="${REPORT%%|*}"
+MAKER="${REPORT##*|}"
 echo "  arena service : $(systemctl is-active arena)"
-echo "  sandbox       : $ISO"
+echo "  agent sandbox : $ISO"
+echo "  maker         : $MAKER"
 echo "  data dir      : $DATA_DIR"
 
 if [[ "$ISO" != docker* ]]; then

@@ -76,6 +76,33 @@ curl -s localhost:8090/api/config | python3 -m json.tool | grep -A6 isolation
 `"strength": "strong"` means Docker. Anything else means do not open it to the
 public yet.
 
+### The second image: the challenge-maker
+
+```bash
+docker build -t autoctf-maker:latest -f Dockerfile.maker .
+python -m arena_platform.server --maker-backend docker …
+```
+
+The maker builds each challenge and runs `verify_spec`, which **executes a
+generated solver**. In-process that is a subprocess with your server's filesystem
+and network; in the image it is read-only, capabilities dropped,
+`no-new-privileges`, tmpfs workdir, memory/PID/CPU capped.
+
+`--maker-backend docker` refuses to fall back, so a server that is supposed to be
+containerised fails at startup instead of quietly running the maker on the host.
+`/api/config` reports which backend is live under `maker`, and the startup banner
+prints it.
+
+Two consequences worth knowing:
+
+- **The image decides what tracks you can offer.** It ships `gcc`, so the arena
+  asks the container what it can build and plans each route from that. A host
+  with no compiler can still run the reverse ladder.
+- **A design brain means egress.** With `AUTOCTF_DESIGN=catalog` (the shipped
+  default) the maker's containers run `--network none`. Set an `OPENAI_API_KEY`
+  and they must reach the model endpoint instead. `describe()` and `/api/config`
+  say which case is live — decide it deliberately.
+
 ---
 
 ## Where to host it

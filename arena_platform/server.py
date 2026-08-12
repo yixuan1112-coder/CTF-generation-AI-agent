@@ -62,16 +62,36 @@ class Arena:
     """Wiring: store + engine + upload directory, shared by all request threads."""
 
     def __init__(self, data_dir: Path | str = ".arena", workers: int = 2,
-                 backend: str = "auto"):
+                 backend: str = "auto", maker_backend: str = "auto"):
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.upload_root = self.data_dir / "uploads"
         self.upload_root.mkdir(exist_ok=True)
         self.store = Store(self.data_dir / "arena.sqlite3")
+        # Where the challenge-maker runs. Probe it once here, before any track is
+        # described: with a container maker the route depends on the IMAGE's
+        # toolchain, not this host's, and the two can differ.
+        self.maker_backend = maker_backend
+        self.maker_report = self._probe_maker()
         self.engine = MatchEngine(self.store, self.upload_root, workers=workers,
-                                  backend=backend)
+                                  backend=backend, maker_backend=maker_backend)
         self.limit_teams = RateLimiter(limit=10, window_s=3600)
         self.limit_matches = RateLimiter(limit=30, window_s=3600)
+
+    def _probe_maker(self) -> dict:
+        """Ask the maker what it can build, and tell `tracks` so routes match."""
+        from autoctf_gan import maker as maker_mod
+        from .tracks import set_maker_capabilities
+
+        try:
+            probe = maker_mod.for_arena(backend=self.maker_backend, start="crypto")
+            report = probe.describe()
+            set_maker_capabilities({"gcc": report["gcc"], "fpylll": report["fpylll"]})
+        except maker_mod.MakerError as exc:
+            # backend='docker' was demanded and could not be honoured. Fail here,
+            # at startup, rather than at the first evolution of the first match.
+            raise RuntimeError(f"challenge-maker unavailable: {exc}") from exc
+        return report
 
     def start(self) -> None:
         self.engine.start()
@@ -149,6 +169,32 @@ def _public_agent(agent: dict) -> dict:
     if agent.get("kind") == "remote":
         out["remote_url"] = agent.get("remote_url")
     return out
+
+
+def _library_zip(entry: dict) -> bytes:
+    """The player package: exactly the artifacts the competing agent was handed."""
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for name, content in sorted((entry.get("files") or {}).items()):
+            zf.writestr(name, content)
+        zf.writestr("CHALLENGE.txt", _library_brief(entry))
+    return buf.getvalue()
+
+
+def _library_brief(entry: dict) -> str:
+    hints = "\n".join(f"  - {h}" for h in entry.get("hints") or [])
+    stages = " -> ".join(entry.get("stages") or []) or entry.get("attack_class", "")
+    return (f"{entry.get('title', '')}\n{'=' * len(entry.get('title', ''))}\n\n"
+            f"{entry.get('story', '')}\n\n"
+            f"Composition : {stages}\n"
+            f"Depth       : {entry.get('depth')}    Difficulty rank: {entry.get('rank')}\n"
+            f"Designed by : {'a model' if entry.get('plan_source') == 'llm' else 'the catalogue'}\n"
+            f"Authored during a match against {entry.get('team_name') or 'a team'}.\n\n"
+            f"Hints:\n{hints}\n\n"
+            f"Submit the flag at /library/{entry.get('id')}.\n")
 
 
 def _public_match(m: dict) -> dict:
@@ -238,7 +284,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"error": f"internal error: {type(exc).__name__}: {exc}"}, 500)
 
     # ---- pages -------------------------------------------------------------
-    PAGES = {"/": "index.html", "/submit": "submit.html", "/docs": "docs.html"}
+    PAGES = {"/": "index.html", "/submit": "submit.html", "/docs": "docs.html",
+             "/library": "library.html"}
 
     def _serve_page(self, path: str) -> bool:
         if path in self.PAGES:
@@ -276,10 +323,16 @@ class Handler(BaseHTTPRequestHandler):
                           "per_gen_timeout_s": t.per_gen_timeout_s,
                           "match_budget_s": t.match_budget_s,
                           "available": t.available,
-                          "unavailable_reason": t.unavailable_reason}
+                          "unavailable_reason": t.unavailable_reason,
+                          "route": t.route, "endless": t.endless,
+                          "skipped_segments": t.skipped_segments}
                       for k, t in all_tracks().items()}
+            from autoctf_gan.design import brain_status
             return self._json({"tracks": tracks, "isolation": backend_report(),
                                "libraries": available_libraries(),
+                               "design_brain": brain_status(),
+                               "maker": arena.maker_report,
+                               "library_size": store.library_count(),
                                "limits": {"max_upload_mb": agents_mod.MAX_UPLOAD_BYTES // (1024 * 1024),
                                           "max_active_matches": MAX_ACTIVE_MATCHES_PER_TEAM}})
 
@@ -334,6 +387,33 @@ class Handler(BaseHTTPRequestHandler):
             rows = store.leaderboard(track if track != "all" else None)
             return self._json({"track": track,
                                "leaderboard": [_public_match(r) for r in rows]})
+
+        if path == "/api/library" and method == "GET":
+            limit = min(200, int(qs.get("limit", ["60"])[0] or 60))
+            offset = max(0, int(qs.get("offset", ["0"])[0] or 0))
+            source = qs.get("source", [""])[0]
+            if source not in ("", "catalog", "llm"):
+                raise ApiError("source must be 'catalog' or 'llm'")
+            return self._json({"total": store.library_count(),
+                               "entries": store.library(limit=limit, offset=offset,
+                                                        plan_source=source)})
+
+        if path.startswith("/api/library/"):
+            rest = path[len("/api/library/"):]
+            entry_id, _, tail = rest.partition("/")
+            entry = store.library_entry(entry_id, with_files=tail == "download")
+            if not entry:
+                raise ApiError("unknown library challenge", 404)
+            if tail == "" and method == "GET":
+                return self._json(entry)
+            if tail == "download" and method == "GET":
+                return self._send(200, "application/zip", _library_zip(entry),
+                                  {"Content-Disposition":
+                                   f'attachment; filename="{entry_id}.zip"'})
+            if tail == "submit" and method == "POST":
+                flag = str(self._json_body().get("flag", ""))[:512]
+                return self._json({"correct": store.library_check_flag(entry_id, flag)})
+            raise ApiError("unknown library sub-resource", 404)
 
         if path == "/api/template" and method == "GET":
             template = Path(__file__).resolve().parents[1] / "team_agent.py"
@@ -420,9 +500,12 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def serve(host: str = "127.0.0.1", port: int = 8090, data_dir: str = ".arena",
-          workers: int = 2, backend: str = "auto") -> None:
+          workers: int = 2, backend: str = "auto", maker_backend: str = "auto") -> None:
+    # The maker is probed inside Arena(), and tracks plan their routes from what
+    # it reports — so it has to exist before warmup() describes any ladder.
+    arena = Arena(data_dir=data_dir, workers=workers, backend=backend,
+                  maker_backend=maker_backend)
     warmup()          # main thread: see tracks.warmup for why this must come first
-    arena = Arena(data_dir=data_dir, workers=workers, backend=backend)
     arena.start()
 
     if host not in ("127.0.0.1", "localhost", "::1"):
@@ -436,8 +519,19 @@ def serve(host: str = "127.0.0.1", port: int = 8090, data_dir: str = ".arena",
     shown = "localhost" if host in ("0.0.0.0", "::") else host
     print(f"AutoCTF Arena   http://{shown}:{port}")
     print(f"  isolation     {iso['backend']} ({iso['strength']}) — {iso['note']}")
+    mk = arena.maker_report
+    print(f"  maker         {mk['backend']}"
+          + (f" [{mk['image']}]" if mk.get("image") else "")
+          + f" — network: {mk['network']}")
+    if mk["backend"] == "inprocess":
+        print("                the maker and verify_spec run in THIS process; build "
+              "Dockerfile.maker and pass --maker-backend docker to isolate them")
+    print(f"  toolchain     gcc={mk['gcc']} fpylll={mk['fpylll']} design-brain={mk['llm']}")
     print(f"  data dir      {Path(data_dir).resolve()}")
-    print(f"  workers       {workers}    Ctrl-C to stop")
+    print(f"  workers       {workers}    Ctrl-C to stop", flush=True)
+    # Piped to a log file, stdout is block-buffered, so without this the banner —
+    # including which maker backend is live — does not appear until the server
+    # stops, which is exactly when nobody needs it.
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
@@ -454,9 +548,16 @@ def main() -> None:
     ap.add_argument("--port", type=int, default=8090)
     ap.add_argument("--data-dir", default=".arena")
     ap.add_argument("--workers", type=int, default=2, help="concurrent matches")
-    ap.add_argument("--backend", choices=("auto", "docker", "subprocess"), default="auto")
+    ap.add_argument("--backend", choices=("auto", "docker", "subprocess"), default="auto",
+                    help="isolation for TEAM agents")
+    ap.add_argument("--maker-backend", choices=("auto", "docker", "inprocess"),
+                    default="auto",
+                    help="where the challenge-maker runs. 'docker' refuses to fall "
+                         "back, so a deployment that requires containerization "
+                         "fails at startup instead of quietly using the host")
     args = ap.parse_args()
-    serve(args.host, args.port, args.data_dir, args.workers, args.backend)
+    serve(args.host, args.port, args.data_dir, args.workers, args.backend,
+          args.maker_backend)
 
 
 if __name__ == "__main__":

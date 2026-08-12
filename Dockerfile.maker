@@ -1,0 +1,49 @@
+# The challenge-maker image.
+#
+# The outer platform receives the upload and starts containers; this image holds
+# everything that actually makes a challenge — the build/verify pipeline and the
+# LLM call. Nothing about a match lives in here: the host names the seed, the
+# generation and the per-match secret on each request, so the container is
+# disposable.
+#
+#   docker build -t autoctf-maker:latest -f Dockerfile.maker .
+#   ARENA_MAKER_IMAGE=autoctf-maker:latest ctf-arena --port 8090
+#
+# gcc is installed on purpose. The reverse ladder needs a compiler, and probing
+# for one on the HOST is the wrong question once the maker runs in here — this
+# image is the toolchain, so an arena on a host without gcc can still offer the
+# reverse track. `python -m autoctf_gan.service` with op=capabilities reports what
+# this container can build, and the host plans the campaign route from that.
+FROM python:3.11-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends gcc libc6-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir pycryptodome==3.20.0
+
+# The Boneh-Durfee rung needs a lattice reduction library. It is a source build
+# with heavy dependencies, so it is best-effort: crypto_ladder already drops that
+# rung when fpylll is absent, and `capabilities` reports which way it went rather
+# than the arena advertising a rung this image cannot build.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends g++ libgmp-dev libmpfr-dev libfplll-dev pkg-config \
+    && (pip install --no-cache-dir cysignals fpylll || echo "fpylll unavailable; Boneh-Durfee rung disabled") \
+    && apt-get purge -y pkg-config \
+    && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /srv
+COPY autoctf_gan /srv/autoctf_gan
+
+# Verification runs a generated solver in here. Give it somewhere writable that
+# is not the code, and a non-root user to be it.
+RUN useradd --create-home --uid 10001 maker \
+    && mkdir -p /work && chown maker:maker /work
+USER maker
+WORKDIR /work
+
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PYTHONPATH=/srv HOME=/tmp
+
+# One JSON object in, one JSON object out. The arena supplies the request on stdin.
+ENTRYPOINT ["python", "-m", "autoctf_gan.service"]

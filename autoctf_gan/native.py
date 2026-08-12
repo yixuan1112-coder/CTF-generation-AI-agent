@@ -25,6 +25,7 @@ import tempfile
 import time
 from pathlib import Path
 
+from .identity import challenge_flag, challenge_secret, public_slug
 from .models import (ChainStep, ChallengeSpec, Lineage, OfficialSolver, Verdict)
 
 _MASK = 0xFFFFFFFF
@@ -48,14 +49,6 @@ def _keystream(state: int, n: int) -> bytes:
         s &= _MASK
         out.append(s & 0xFF)
     return bytes(out)
-
-
-def _password_for(seed: int) -> str:
-    return hashlib.sha256(f"crackme-key::{seed}".encode()).hexdigest()[:8]
-
-
-def _flag_for(seed: int) -> str:
-    return f"flag{{{hashlib.sha256(f'crackme::{seed}'.encode()).hexdigest()[:12]}}}"
 
 
 # Placeholder replacement (not str.format) because C source is full of braces.
@@ -100,10 +93,16 @@ def gen_compiled_crackme(*, seed: int, archetype_id: str = "reverse.crackme",
                          generation: int = 0, rounds: int | None = None,
                          parent_spec_id: str | None = None,
                          mutation_ops: list[str] | None = None,
-                         target_solve_rate: float = 0.05) -> ChallengeSpec:
+                         target_solve_rate: float = 0.05,
+                         flag_secret: str = "") -> ChallengeSpec:
     """Deterministic native crackme. `rounds` = structural difficulty knob."""
-    flag = _flag_for(seed)
-    password = _password_for(seed)
+    # Both the flag and the intended password are bound to the generation and to
+    # the per-match secret. They used to be sha256 of the seed alone, so every
+    # round of a climb shipped the same flag and the same password.
+    flag = challenge_flag(kind="crackme", seed=seed, generation=generation,
+                          secret=flag_secret)
+    password = challenge_secret(kind="crackme-key", seed=seed, generation=generation,
+                                secret=flag_secret)
     rounds = rounds if rounds is not None else 2 + generation
     ks = _keystream(_mix_state(password.encode(), rounds), len(flag))
     enc = bytes(f ^ k for f, k in zip(flag.encode(), ks))
@@ -123,7 +122,8 @@ def gen_compiled_crackme(*, seed: int, archetype_id: str = "reverse.crackme",
     )
 
     difficulty = "hard" if rounds >= 4 else ("medium" if rounds >= 2 else "easy")
-    slug = f"reverse-crackme-{seed:06d}-g{generation}"
+    slug = public_slug(base="reverse-crackme", seed=seed, generation=generation,
+                       secret=flag_secret)
     depth = rounds  # modeled intended depth = key-schedule rounds
     return ChallengeSpec(
         slug=slug,
@@ -145,7 +145,7 @@ def gen_compiled_crackme(*, seed: int, archetype_id: str = "reverse.crackme",
                              "rounds": rounds},
                    "password_len": len(password)},
         flag=flag,
-        spec_id=f"{slug}-{expected_sha[:8]}",
+        spec_id=slug,
         lineage=Lineage(archetype_id=archetype_id, generation=generation,
                         parent_spec_id=parent_spec_id, mutation_ops=mutation_ops or [],
                         seed=seed),
@@ -162,7 +162,7 @@ def gen_compiled_crackme(*, seed: int, archetype_id: str = "reverse.crackme",
     )
 
 
-def mutate_native(parent: ChallengeSpec) -> ChallengeSpec:
+def mutate_native(parent: ChallengeSpec, flag_secret: str = "") -> ChallengeSpec:
     """Structural mutation for the native category: +1 key-schedule round.
 
     Entropy-free (the key length is fixed); difficulty grows only by deepening
@@ -173,7 +173,8 @@ def mutate_native(parent: ChallengeSpec) -> ChallengeSpec:
                                 generation=parent.lineage.generation + 1, rounds=rounds,
                                 parent_spec_id=parent.spec_id,
                                 mutation_ops=["deepen_key_schedule"],
-                                target_solve_rate=parent.target_solve_rate)
+                                target_solve_rate=parent.target_solve_rate,
+                                flag_secret=flag_secret)
 
 
 # ---------------------------------------------------------------------------

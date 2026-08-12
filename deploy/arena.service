@@ -22,8 +22,16 @@ User=arena
 Group=docker
 WorkingDirectory=/opt/arena
 Environment=PYTHONUNBUFFERED=1
-# Build this first: docker build -t autoctf-arena-agent:latest -f Dockerfile.agent .
+# Build these first:
+#   docker build -t autoctf-arena-agent:latest -f Dockerfile.agent .
+#   docker build -t autoctf-maker:latest       -f Dockerfile.maker .
 Environment=ARENA_DOCKER_IMAGE=autoctf-arena-agent:latest
+Environment=ARENA_MAKER_IMAGE=autoctf-maker:latest
+# The maker enumerates its catalogue only, so its containers get --network none.
+# Drop this (and add OPENAI_API_KEY below) to let a model design challenges —
+# that gives the maker's containers egress, which is a deliberate trade.
+Environment=AUTOCTF_DESIGN=catalog
+# Environment=OPENAI_API_KEY=sk-...
 # Redundant behind a public bind (the server sets it itself) but explicit is better.
 Environment=ARENA_BLOCK_PRIVATE_REMOTE=1
 Environment=ARENA_AGENT_MEMORY_MB=2048
@@ -33,7 +41,8 @@ ExecStart=/opt/arena/.venv/bin/python -m arena_platform.server \
     --host 127.0.0.1 --port 8090 \
     --data-dir /var/lib/arena \
     --workers 2 \
-    --backend docker
+    --backend docker \
+    --maker-backend docker
 
 Restart=on-failure
 RestartSec=5

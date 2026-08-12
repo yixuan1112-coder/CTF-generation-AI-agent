@@ -71,9 +71,41 @@ CREATE TABLE IF NOT EXISTS match_events (
     payload   TEXT NOT NULL
 );
 
+-- Challenges the maker AUTHORED during a match, kept after the match ends.
+--
+-- Composed challenges only exist because a team pushed the maker past every
+-- bounded rung; without this table they were built, deployed, solved or not, and
+-- thrown away when the Competition object was collected. Rows are player-safe by
+-- construction: `files` holds exactly what the agent was handed, and the flag is
+-- stored only as a hash so a submission can be checked without the answer being
+-- in the database.
+CREATE TABLE IF NOT EXISTS library (
+    id            TEXT PRIMARY KEY,
+    created_at    REAL NOT NULL,
+    match_id      TEXT,                       -- provenance; NULL once the match is pruned
+    team_name     TEXT DEFAULT '',            -- who pushed the maker this far
+    track         TEXT NOT NULL,
+    generation    INTEGER NOT NULL,
+    attack_class  TEXT NOT NULL,
+    title         TEXT NOT NULL,
+    story         TEXT DEFAULT '',
+    hints         TEXT DEFAULT '[]',          -- json
+    stages        TEXT DEFAULT '[]',          -- json: the chained attack classes
+    depth         INTEGER DEFAULT 0,
+    rank          INTEGER DEFAULT 0,
+    plan_source   TEXT DEFAULT 'catalog',     -- catalog | llm
+    designer_note TEXT DEFAULT '',
+    files         TEXT NOT NULL,              -- json: player artifacts, name -> content
+    flag_sha256   TEXT NOT NULL,              -- 64-bit flag; the answer is not stored
+    solved_in_match INTEGER DEFAULT 0,
+    solve_count   INTEGER DEFAULT 0
+);
+
 CREATE INDEX IF NOT EXISTS idx_events_match ON match_events(match_id, seq);
 CREATE INDEX IF NOT EXISTS idx_matches_team ON matches(team_id, status);
 CREATE INDEX IF NOT EXISTS idx_matches_board ON matches(track, status, reached_gen);
+CREATE INDEX IF NOT EXISTS idx_library_recent ON library(created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_library_dedup ON library(flag_sha256);
 """
 
 
@@ -258,6 +290,98 @@ class Store:
         for i, row in enumerate(ranked, 1):
             row["rank"] = i
         return ranked
+
+    # ---- challenge library -------------------------------------------------
+    def archive_challenge(self, *, spec, match_id: str = "", team_name: str = "",
+                          track: str = "", solved: bool = False) -> dict | None:
+        """Keep an authored challenge after the match that produced it ends.
+
+        Takes the organizer-side spec but stores only what a player may see: the
+        artifacts, the prose, and sha256 of the flag. The real flag, the solver
+        source and the match secret never reach the database.
+
+        Deduplicated on flag_sha256, which is unique per (secret, seed, generation)
+        — so replaying a match does not fill the library with copies.
+        """
+        mechanics = getattr(spec, "mechanics", {}) or {}
+        entry = {
+            "id": new_id("lib"), "created_at": time.time(),
+            "match_id": match_id or None, "team_name": team_name or "",
+            "track": track or spec.category, "generation": spec.lineage.generation,
+            "attack_class": mechanics.get("attack_class") or spec.challenge_type,
+            "title": spec.title, "story": spec.story or "",
+            "hints": json.dumps(list(spec.hints or []), ensure_ascii=False),
+            "stages": json.dumps(list(mechanics.get("stages") or []), ensure_ascii=False),
+            "depth": int(mechanics.get("depth") or spec.intended_depth),
+            "rank": int(mechanics.get("rank") or 0),
+            "plan_source": mechanics.get("plan_source") or "catalog",
+            "designer_note": mechanics.get("designer_note") or "",
+            "files": json.dumps(dict(spec.artifacts or {}), ensure_ascii=False),
+            "flag_sha256": spec.official_solver.expected_flag_sha256,
+            "solved_in_match": 1 if solved else 0, "solve_count": 0,
+        }
+        if not entry["flag_sha256"]:
+            return None
+        cols = tuple(entry)
+        with self._write_lock:
+            cur = self.conn().execute(
+                f"INSERT OR IGNORE INTO library ({','.join(cols)}) "
+                f"VALUES ({','.join('?' * len(cols))})",
+                tuple(entry[c] for c in cols))
+        return entry if cur.rowcount else None
+
+    def library(self, *, limit: int = 60, offset: int = 0,
+                plan_source: str = "") -> list[dict]:
+        q = "SELECT * FROM library"
+        args: tuple = ()
+        if plan_source:
+            q += " WHERE plan_source = ?"
+            args = (plan_source,)
+        q += " ORDER BY rank DESC, created_at DESC LIMIT ? OFFSET ?"
+        rows = self.conn().execute(q, args + (max(1, min(limit, 200)), max(0, offset)))
+        return [_library_row(dict(r)) for r in rows]
+
+    def library_count(self) -> int:
+        return self.conn().execute("SELECT COUNT(*) AS n FROM library").fetchone()["n"]
+
+    def library_entry(self, entry_id: str, *, with_files: bool = False) -> dict | None:
+        r = self.conn().execute("SELECT * FROM library WHERE id = ?", (entry_id,)).fetchone()
+        if not r:
+            return None
+        return _library_row(dict(r), with_files=with_files)
+
+    def mark_library_solved(self, entry_id: str) -> None:
+        with self._write_lock:
+            self.conn().execute(
+                "UPDATE library SET solved_in_match = 1 WHERE id = ?", (entry_id,))
+
+    def library_check_flag(self, entry_id: str, flag: str) -> bool:
+        """Check a submission without the answer ever being stored."""
+        import hashlib
+        r = self.conn().execute(
+            "SELECT flag_sha256 FROM library WHERE id = ?", (entry_id,)).fetchone()
+        if not r:
+            return False
+        ok = hashlib.sha256((flag or "").strip().encode()).hexdigest() == r["flag_sha256"]
+        if ok:
+            with self._write_lock:
+                self.conn().execute(
+                    "UPDATE library SET solve_count = solve_count + 1 WHERE id = ?",
+                    (entry_id,))
+        return ok
+
+
+def _library_row(row: dict, *, with_files: bool = False) -> dict:
+    """Decode the json columns and drop anything a browser has no business seeing."""
+    row["hints"] = json.loads(row.get("hints") or "[]")
+    row["stages"] = json.loads(row.get("stages") or "[]")
+    files = json.loads(row.pop("files", None) or "{}")
+    row["file_list"] = [{"name": n, "bytes": len(c)} for n, c in sorted(files.items())]
+    if with_files:
+        row["files"] = files
+    # The hash is only needed server-side to check submissions.
+    row.pop("flag_sha256", None)
+    return row
 
 
 def _rank_key(m: dict) -> tuple:

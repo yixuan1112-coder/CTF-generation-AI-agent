@@ -299,18 +299,45 @@ class TrackTests(unittest.TestCase):
         with self.assertRaises(KeyError):
             get_track("quantum")
 
-    def test_rung_name_clamps_past_the_end(self):
+    def test_rung_name_past_the_ladder_names_an_authored_challenge(self):
+        """The ladder no longer clamps: past its end the maker composes.
+
+        This used to assert `rung_name(999) == rungs[-1]`, which was the whole
+        problem — the arena redeployed the last rung forever and called the match
+        cleared. A generation past the bounded route must now name a composition.
+        """
         track = get_track("crypto")
-        self.assertEqual(track.rung_name(999), track.rungs[-1])
+        self.assertTrue(track.endless)
+        deep = track.rung_name(track.max_gen + 1)
+        self.assertNotEqual(deep, track.rungs[-1])
+        self.assertTrue(deep.startswith("compose:"), deep)
+
+    def test_authored_rungs_never_repeat(self):
+        track = get_track("crypto")
+        authored = [track.rung_name(track.max_gen + 1 + i) for i in range(40)]
+        self.assertEqual(len(set(authored)), len(authored))
+
+    def test_a_track_never_substitutes_another_discipline(self):
+        """If the starting ladder cannot build here, the track is withdrawn.
+
+        Cross-tracking is an escalation, not a fallback: a team that entered the
+        reverse track must never be handed crypto rungs because gcc is missing.
+        """
+        for track in all_tracks().values():
+            if not track.available:
+                continue
+            self.assertEqual(track.route[0]["category"], track.category)
 
 
 class TrackLadderIntegrityTests(unittest.TestCase):
     """A track must not advertise more rungs than its generator can produce.
 
-    Each of these ladders clamps at its last entry: ask for a deeper generation
-    and you get the previous challenge back. If a Track declares more rungs than
-    that, the arena redeploys an identical rung while telling the team it evolved,
-    and "cleared" stops meaning anything.
+    A bounded ladder clamps at its last entry: ask for a deeper generation and you
+    get the previous challenge back. If a Track declares more BOUNDED rungs than
+    that, the arena redeploys an identical rung while telling the team it evolved.
+    Tracks with an authoring tail escape this by construction — past the bounded
+    route the maker composes a new challenge instead of repeating one — which is
+    what `test_authored_rungs_never_repeat` covers.
     """
 
     def _distinct_rungs(self, category: str, probe_depth: int = 9) -> int:
@@ -334,14 +361,24 @@ class TrackLadderIntegrityTests(unittest.TestCase):
     def test_web_track_stops_where_the_ladder_clamps(self):
         self.assertEqual(len(get_track("web").rungs), self._distinct_rungs("web"))
 
-    def test_crypto_track_matches_the_engine_ladder(self):
+    def test_crypto_segment_matches_the_engine_ladder(self):
+        """The crypto SEGMENT must mirror the engine, whatever follows it.
+
+        Asserting on `track.rungs` would now depend on whether this host can build
+        the cross-track reverse ladder, so pin the segment instead.
+        """
         from autoctf_gan.crypto_ladder import LADDER_NAMES
-        self.assertEqual(get_track("crypto").rungs, list(LADDER_NAMES))
+        crypto = [s for s in get_track("crypto").route if s["key"] == "crypto-ladder"]
+        self.assertEqual(len(crypto), 1)
+        self.assertEqual(crypto[0]["rungs"], list(LADDER_NAMES))
 
     def test_reverse_track_rungs_are_all_reachable(self):
         """Reverse has no ceiling, so every declared rung must be distinct."""
         track = get_track("reverse")
-        self.assertLessEqual(len(track.rungs),
+        if not track.available:
+            self.skipTest(f"reverse not buildable here: {track.unavailable_reason}")
+        reverse = [s for s in track.route if s["key"] == "reverse-ladder"][0]
+        self.assertLessEqual(len(reverse["rungs"]),
                              self._distinct_rungs("reverse", probe_depth=9))
 
 

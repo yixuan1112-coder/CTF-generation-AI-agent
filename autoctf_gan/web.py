@@ -22,6 +22,7 @@ import shutil
 import subprocess
 import time
 
+from .identity import challenge_flag, public_slug
 from .models import ChainStep, ChallengeSpec, Lineage, OfficialSolver, Verdict
 
 _FLASK_APP = r"""
@@ -86,9 +87,11 @@ def payload_for(generation: int) -> str:
 def gen_web_ssti(*, seed: int, archetype_id: str = "web.ssti.jinja2",
                  generation: int = 0, parent_spec_id: str | None = None,
                  mutation_ops: list[str] | None = None,
-                 target_solve_rate: float = 0.05) -> ChallengeSpec:
+                 target_solve_rate: float = 0.05,
+                 flag_secret: str = "") -> ChallengeSpec:
     g = min(generation, MAX_WEB_GEN)
-    flag = f"flag{{{hashlib.sha256(f'ssti::{seed}'.encode()).hexdigest()[:12]}}}"
+    flag = challenge_flag(kind="ssti", seed=seed, generation=generation,
+                          secret=flag_secret)
     deny = deny_for(generation)
     payload = payload_for(generation)
     expected_sha = hashlib.sha256(flag.encode()).hexdigest()
@@ -100,7 +103,8 @@ def gen_web_ssti(*, seed: int, archetype_id: str = "web.ssti.jinja2",
         "m = re.search(r'flag\\{[0-9a-f]+\\}', r.text)\n"
         "print(m.group(0) if m else 'NO-FLAG')\n"
     )
-    slug = f"web-ssti-{seed:06d}-g{generation}"
+    slug = public_slug(base="web-ssti", seed=seed, generation=generation,
+                       secret=flag_secret)
     return ChallengeSpec(
         slug=slug, title=f"SSTI Guard L{g} (Gen-{generation})", category="web",
         challenge_type="ssti", difficulty="medium" if g < 2 else "hard",
@@ -112,7 +116,7 @@ def gen_web_ssti(*, seed: int, archetype_id: str = "web.ssti.jinja2",
         delivery="web", seed=seed,
         mechanics={"build": {"engine": "docker", "port": 8000, "deny": deny},
                    "guard_tokens": len(deny), "bypass_level": g},
-        flag=flag, spec_id=f"{slug}-{expected_sha[:8]}",
+        flag=flag, spec_id=slug,
         lineage=Lineage(archetype_id=archetype_id, generation=generation,
                         parent_spec_id=parent_spec_id, mutation_ops=mutation_ops or [],
                         seed=seed),
@@ -131,12 +135,13 @@ def gen_web_ssti(*, seed: int, archetype_id: str = "web.ssti.jinja2",
     )
 
 
-def mutate_web(parent: ChallengeSpec) -> ChallengeSpec:
+def mutate_web(parent: ChallengeSpec, flag_secret: str = "") -> ChallengeSpec:
     """Escalate the denylist by one token; re-pair the PoC to the harder bypass (P1)."""
     return gen_web_ssti(seed=parent.seed, archetype_id=parent.lineage.archetype_id,
                         generation=parent.lineage.generation + 1,
                         parent_spec_id=parent.spec_id, mutation_ops=["escalate_denylist"],
-                        target_solve_rate=parent.target_solve_rate)
+                        target_solve_rate=parent.target_solve_rate,
+                        flag_secret=flag_secret)
 
 
 # ---------------------------------------------------------------------------
