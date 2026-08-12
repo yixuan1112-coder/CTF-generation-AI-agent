@@ -10,6 +10,10 @@ set -euo pipefail
 DOMAIN="${1:-}"
 EMAIL="${2:-}"
 REPO="${ARENA_REPO:-https://github.com/yixuan1112-coder/CTF-generation-AI-agent}"
+# Deploy a branch instead of the default one:  ARENA_BRANCH=my-branch sudo -E bash ...
+# Without this, a shallow clone silently takes the default branch, so work that
+# has not been merged yet deploys as the version it replaced.
+BRANCH="${ARENA_BRANCH:-}"
 HOME_DIR=/opt/arena
 DATA_DIR=/var/lib/arena
 
@@ -53,11 +57,17 @@ chown -R arena:arena "$DATA_DIR"
 
 say "Fetching the arena"
 if [[ -d "$HOME_DIR/.git" ]]; then
-  sudo -u arena git -C "$HOME_DIR" pull --ff-only
+  if [[ -n "$BRANCH" ]]; then
+    sudo -u arena git -C "$HOME_DIR" fetch --depth 1 origin "$BRANCH"
+    sudo -u arena git -C "$HOME_DIR" checkout -B "$BRANCH" FETCH_HEAD
+  else
+    sudo -u arena git -C "$HOME_DIR" pull --ff-only
+  fi
 else
   rm -rf "${HOME_DIR:?}/"* 2>/dev/null || true
-  sudo -u arena git clone --depth 1 "$REPO" "$HOME_DIR"
+  sudo -u arena git clone --depth 1 ${BRANCH:+--branch "$BRANCH"} "$REPO" "$HOME_DIR"
 fi
+echo "  deployed $(sudo -u arena git -C "$HOME_DIR" rev-parse --short HEAD) on ${BRANCH:-default branch}"
 
 say "Installing Python dependencies"
 sudo -u arena python3 -m venv "$HOME_DIR/.venv"
