@@ -1,0 +1,33 @@
+# The AutoCTF-GAN dashboard — appended to /etc/caddy/Caddyfile by bootstrap.sh
+# when a third argument (the dashboard domain) is given.
+#
+# This surface was written as a LOCAL demo tool, not a public service. `/events`
+# streams a whole tournament, `/comp/simulate` runs one, and `/api/generate`
+# builds a challenge — all unauthenticated GETs, all synchronous, all in the
+# server process. `?verify=true` additionally executes a generated solver.
+#
+# Open to the internet that is a denial of service in one curl loop. The basic
+# auth below is what makes publishing it defensible; bootstrap.sh generates the
+# password and prints it once at the end.
+
+lab.example.com {
+	encode zstd gzip
+
+	basic_auth {
+		lab BCRYPT_HASH_HERE
+	}
+
+	# /events is Server-Sent Events, same as the arena's match stream: without
+	# flush_interval -1 the whole tournament arrives in one lump at the end and
+	# the dashboard looks frozen while it runs.
+	reverse_proxy 127.0.0.1:8080 {
+		flush_interval -1
+		transport http {
+			read_timeout 0
+		}
+	}
+
+	log {
+		output file /var/log/caddy/gan-lab.log
+	}
+}

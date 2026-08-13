@@ -5,10 +5,18 @@
 #
 # Installs Docker (so uploaded agents are properly confined), Python, the arena
 # itself, a systemd service and Caddy with automatic HTTPS. Safe to re-run.
+#
+# An optional third argument also publishes the AutoCTF-GAN dashboard on its own
+# subdomain, behind generated basic auth:
+#
+#   sudo bash deploy/bootstrap.sh arena.example.com you@example.com lab.example.com
+#
+# Both names need their own DNS A record pointing here before you run this.
 set -euo pipefail
 
 DOMAIN="${1:-}"
 EMAIL="${2:-}"
+DASH_DOMAIN="${3:-}"
 REPO="${ARENA_REPO:-https://github.com/yixuan1112-coder/CTF-generation-AI-agent}"
 # Deploy a branch instead of the default one:  ARENA_BRANCH=my-branch sudo -E bash ...
 # Without this, a shallow clone silently takes the default branch, so work that
@@ -18,8 +26,8 @@ HOME_DIR=/opt/arena
 DATA_DIR=/var/lib/arena
 
 if [[ -z "$DOMAIN" ]]; then
-  echo "usage: sudo bash deploy/bootstrap.sh <domain> [email]" >&2
-  echo "  the domain's DNS A record must already point at this server" >&2
+  echo "usage: sudo bash deploy/bootstrap.sh <domain> [email] [dashboard-domain]" >&2
+  echo "  each domain's DNS A record must already point at this server" >&2
   exit 1
 fi
 if [[ $EUID -ne 0 ]]; then
@@ -97,6 +105,25 @@ systemctl daemon-reload
 systemctl enable --now arena
 sleep 4
 
+if [[ -n "$DASH_DOMAIN" ]]; then
+  say "Installing the AutoCTF-GAN dashboard"
+  # Its own user on purpose: the dashboard generates and verifies challenges
+  # in-process, so it executes generated code as itself. Running it as `arena`
+  # would put the contest database and every uploaded agent in that blast
+  # radius. ganlab owns only its scratch dir and is not in the docker group.
+  id -u ganlab >/dev/null 2>&1 || useradd -r -m -d /var/lib/gan-lab -s /usr/sbin/nologin ganlab
+  mkdir -p /var/lib/gan-lab
+  chown -R ganlab:ganlab /var/lib/gan-lab
+  # ...which only means anything if the contest state is actually unreadable.
+  chmod 700 "$DATA_DIR"
+  # ganlab still needs to read the code and the shared venv.
+  chmod -R a+rX "$HOME_DIR"
+  install -m 0644 "$HOME_DIR/deploy/gan-dashboard.service" /etc/systemd/system/gan-dashboard.service
+  systemctl daemon-reload
+  systemctl enable --now gan-dashboard
+  sleep 3
+fi
+
 say "Installing Caddy for HTTPS"
 if ! command -v caddy >/dev/null 2>&1; then
   curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
@@ -108,6 +135,24 @@ if ! command -v caddy >/dev/null 2>&1; then
 fi
 sed -e "s/arena\.example\.com/$DOMAIN/" "$HOME_DIR/deploy/Caddyfile" > /etc/caddy/Caddyfile
 [[ -n "$EMAIL" ]] && sed -i "1i {\n\temail $EMAIL\n}\n" /etc/caddy/Caddyfile
+
+DASH_PASS=""
+if [[ -n "$DASH_DOMAIN" ]]; then
+  # Re-running must not silently rotate the password out from under whoever is
+  # already using it, so reuse the existing hash if this block is already there.
+  if grep -q "^$DASH_DOMAIN {" /etc/caddy/Caddyfile.dashboard.generated 2>/dev/null; then
+    cat /etc/caddy/Caddyfile.dashboard.generated >> /etc/caddy/Caddyfile
+    echo "  dashboard auth: unchanged (delete /etc/caddy/Caddyfile.dashboard.generated to rotate)"
+  else
+    DASH_PASS="$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 20)"
+    DASH_HASH="$(caddy hash-password --plaintext "$DASH_PASS")"
+    sed -e "s/lab\.example\.com/$DASH_DOMAIN/" -e "s|BCRYPT_HASH_HERE|$DASH_HASH|" \
+        "$HOME_DIR/deploy/Caddyfile.dashboard" > /etc/caddy/Caddyfile.dashboard.generated
+    chmod 600 /etc/caddy/Caddyfile.dashboard.generated
+    cat /etc/caddy/Caddyfile.dashboard.generated >> /etc/caddy/Caddyfile
+  fi
+fi
+
 systemctl reload caddy || systemctl restart caddy
 
 say "Verifying"
@@ -125,6 +170,12 @@ echo "  arena service : $(systemctl is-active arena)"
 echo "  agent sandbox : $ISO"
 echo "  maker         : $MAKER"
 echo "  data dir      : $DATA_DIR"
+if [[ -n "$DASH_DOMAIN" ]]; then
+  echo "  dashboard     : $(systemctl is-active gan-dashboard)"
+  curl -fsS --max-time 5 -o /dev/null http://127.0.0.1:8080/ 2>/dev/null \
+    && echo "  dashboard http: responding on 127.0.0.1:8080" \
+    || echo "  dashboard http: NOT responding — journalctl -u gan-dashboard -n 50"
+fi
 
 if [[ "$ISO" != docker* ]]; then
   cat <<'WARN'
@@ -145,3 +196,18 @@ cat <<EOF
   Restart:  systemctl restart arena
   Back up:  $DATA_DIR   (this directory IS the whole contest)
 EOF
+
+if [[ -n "$DASH_DOMAIN" ]]; then
+  cat <<EOF
+
+  Dashboard:  https://$DASH_DOMAIN
+  Logs:       journalctl -u gan-dashboard -f
+EOF
+  if [[ -n "$DASH_PASS" ]]; then
+    cat <<EOF
+
+  Sign in with   user: lab   password: $DASH_PASS
+  This is printed ONCE — only the bcrypt hash is stored. Save it now.
+EOF
+  fi
+fi

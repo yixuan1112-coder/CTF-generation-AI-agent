@@ -1,0 +1,52 @@
+# systemd unit for the AutoCTF-GAN dashboard (autoctf_gan.api).
+#
+#   sudo cp deploy/gan-dashboard.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now gan-dashboard
+#   journalctl -u gan-dashboard -f
+#
+# It runs as its OWN user, deliberately. The dashboard generates and verifies
+# challenges in-process, which means executing generated code as this service's
+# user. Running it as `arena` would put the entire contest — the SQLite database
+# and every team's uploaded agent — inside that blast radius. `ganlab` owns
+# nothing but its own scratch directory and is NOT in the docker group.
+
+[Unit]
+Description=AutoCTF-GAN dashboard (tournament visualisation + challenge console)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ganlab
+Group=ganlab
+WorkingDirectory=/var/lib/gan-lab
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=/opt/arena
+# Catalogue-only design brain, so nothing here needs egress to a model endpoint.
+Environment=AUTOCTF_DESIGN=catalog
+
+# serve_stdlib() hardcodes 127.0.0.1:8080 — the reverse proxy in front is what
+# terminates TLS and enforces the basic auth, so the port must stay on loopback.
+ExecStart=/opt/arena/.venv/bin/python -m autoctf_gan.api
+
+Restart=on-failure
+RestartSec=5
+
+# Every /events or /comp/simulate request runs a tournament on a thread of its
+# own, and the endpoints are cheap to call. These caps bound what a burst of
+# requests can cost the box even with auth in front.
+MemoryMax=1G
+TasksMax=256
+CPUQuota=100%
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/gan-lab
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target
