@@ -72,7 +72,10 @@ if [[ -d "$HOME_DIR/.git" ]]; then
     sudo -u arena git -C "$HOME_DIR" pull --ff-only
   fi
 else
-  rm -rf "${HOME_DIR:?}/"* 2>/dev/null || true
+  # useradd -m seeded $HOME_DIR from /etc/skel, so on a first install the
+  # directory already holds .bashrc/.profile and git clone refuses it. A `*`
+  # glob does not match those, so clear the directory with find instead.
+  find "${HOME_DIR:?}" -mindepth 1 -delete 2>/dev/null || true
   sudo -u arena git clone --depth 1 ${BRANCH:+--branch "$BRANCH"} "$REPO" "$HOME_DIR"
 fi
 echo "  deployed $(sudo -u arena git -C "$HOME_DIR" rev-parse --short HEAD) on ${BRANCH:-default branch}"
@@ -80,7 +83,13 @@ echo "  deployed $(sudo -u arena git -C "$HOME_DIR" rev-parse --short HEAD) on $
 say "Installing Python dependencies"
 sudo -u arena python3 -m venv "$HOME_DIR/.venv"
 sudo -u arena "$HOME_DIR/.venv/bin/pip" install -q --upgrade pip
-sudo -u arena "$HOME_DIR/.venv/bin/pip" install -q -e "$HOME_DIR" pycryptodome sympy flask
+# pyproject.toml declares no dependencies, so `pip install -e` brings in nothing
+# and this list is the real dependency set. jsonschema is NOT optional: importing
+# autoctf_gan pulls in generator -> schema -> jsonschema, so both services
+# crash-loop at startup without it. Dockerfile.maker already pins it; the host
+# venv was the copy that still missed it. jinja2 arrives transitively via flask.
+sudo -u arena "$HOME_DIR/.venv/bin/pip" install -q -e "$HOME_DIR" \
+     pycryptodome sympy flask jsonschema
 
 say "Installing fpylll (optional: it is what enables the Boneh-Durfee rung)"
 if apt-get install -y -qq libfplll-dev libgmp-dev libmpfr-dev libqd-dev 2>/dev/null \
@@ -144,7 +153,10 @@ if [[ -n "$DASH_DOMAIN" ]]; then
     cat /etc/caddy/Caddyfile.dashboard.generated >> /etc/caddy/Caddyfile
     echo "  dashboard auth: unchanged (delete /etc/caddy/Caddyfile.dashboard.generated to rotate)"
   else
-    DASH_PASS="$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 20)"
+    # `head -c` closes the pipe once it has its 20 bytes, so tr dies of SIGPIPE
+    # and the pipeline exits 141. Under `set -o pipefail` that aborts the whole
+    # script right before the verification step, so scope pipefail off here.
+    DASH_PASS="$(set +o pipefail; tr -dc 'A-Za-z0-9' </dev/urandom | head -c 20)"
     DASH_HASH="$(caddy hash-password --plaintext "$DASH_PASS")"
     sed -e "s/lab\.example\.com/$DASH_DOMAIN/" -e "s|BCRYPT_HASH_HERE|$DASH_HASH|" \
         "$HOME_DIR/deploy/Caddyfile.dashboard" > /etc/caddy/Caddyfile.dashboard.generated
