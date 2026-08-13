@@ -44,7 +44,12 @@ def index():
     return Template("Hello " + name + "!").render(ctx=CTX)   # SSTI sink
 
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=int(os.environ.get("PORT", "8000")))
+    # Bind 0.0.0.0, not 127.0.0.1: this runs inside its own container, and a
+    # published/mapped port (or a peer on a shared arena network) reaches it on
+    # the container interface, not loopback. Binding loopback makes the service
+    # unreachable from outside the container, so verification and live matches
+    # both fail to connect. The container is the isolation boundary here.
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "8000")))
 """
 
 # The player-facing Dockerfile must never carry the real flag: it is shipped as a
@@ -95,12 +100,17 @@ def gen_web_ssti(*, seed: int, archetype_id: str = "web.ssti.jinja2",
     deny = deny_for(generation)
     payload = payload_for(generation)
     expected_sha = hashlib.sha256(flag.encode()).hexdigest()
+    # Use urllib, not requests: this solver is executed by the maker image, the
+    # agent image, and CI, and requests is not installed in any of them. The
+    # stdlib works everywhere and keeps the challenge dependency-free.
     poc = (
-        "import sys, re, requests\n"
+        "import sys, re, urllib.parse, urllib.request\n"
         "base = sys.argv[1] if len(sys.argv) > 1 else 'http://127.0.0.1:8000'\n"
         f"payload = {payload!r}\n"
-        "r = requests.get(base, params={'name': payload}, timeout=10)\n"
-        "m = re.search(r'flag\\{[0-9a-f]+\\}', r.text)\n"
+        "url = base.rstrip('/') + '/?' + urllib.parse.urlencode({'name': payload})\n"
+        "with urllib.request.urlopen(url, timeout=10) as r:\n"
+        "    body = r.read().decode('utf-8', 'replace')\n"
+        "m = re.search(r'flag\\{[0-9a-f]+\\}', body)\n"
         "print(m.group(0) if m else 'NO-FLAG')\n"
     )
     slug = public_slug(base="web-ssti", seed=seed, generation=generation,
