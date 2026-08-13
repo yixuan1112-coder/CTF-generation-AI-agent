@@ -4,6 +4,22 @@ version = "1.0.0"
 description = "Adversarial CTF challenge factory + a live arena where team agents compete against an evolving challenge-maker"
 requires-python = ">=3.11"
 
+# Declaring nothing here meant `pip install -e .` installed no dependencies, so
+# every install path re-listed them by hand — and they drifted. CI and
+# deploy/bootstrap.sh both omitted jsonschema, which importing autoctf_gan needs
+# eagerly (__init__ -> generator -> schema), so CI failed on every run since it
+# was added and both services crash-looped on the deployed server. jinja2 is a
+# direct import in autoctf_gan/web.py; it happened to arrive via flask, but
+# relying on another package's dependency is how the next outage starts.
+# fpylll stays out: it is genuinely optional and gates only the Boneh-Durfee rung.
+dependencies = [
+    "jsonschema>=4.0",
+    "pycryptodome>=3.20",
+    "sympy>=1.12",
+    "flask>=3.0",
+    "jinja2>=3.0",
+]
+
 [project.scripts]
 ctf-factory = "ctf_factory.cli:main"
 ctf-arena = "arena_platform.server:main"
