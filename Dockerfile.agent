@@ -11,10 +11,33 @@
 # same image, so anything installed is available to everyone equally.
 FROM python:3.11-slim
 
-RUN pip install --no-cache-dir \
+# fpylll is what makes the Boneh-Durfee rung attackable at all: it is a lattice
+# attack, and without a reduction library an agent would have to ship its own
+# LLL. bootstrap.sh installs fpylll on the host, which is what makes the arena
+# advertise that rung -- so leaving it out here published a rung no agent could
+# solve with the libraries it was given. tests/test_arena.py asserts exactly
+# this: agents must reach every library the host has.
+#
+# fpylll has no wheels, so it compiles against fplll/GMP/MPFR/QD. The build
+# toolchain is dropped afterwards; the -dev packages stay because they carry the
+# runtime shared objects fpylll links against.
+#
+# fpylll matches the host exactly. cysignals cannot: it is only a build-time
+# dependency of fpylll, and the host's 1.12.6 requires Python >=3.12 while this
+# image is 3.11. 1.12.5 is the last release that still supports 3.11.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+        build-essential \
+        libfplll-dev libgmp-dev libmpfr-dev libqd-dev \
+ && pip install --no-cache-dir \
         pycryptodome==3.20.0 \
         sympy==1.13.3 \
-        gmpy2==2.2.1
+        gmpy2==2.2.1 \
+        cysignals==1.12.5 \
+        fpylll==0.6.4 \
+ && apt-get purge -y build-essential \
+ && apt-get autoremove -y \
+ && rm -rf /var/lib/apt/lists/*
 
 # The arena runs the container as the host user (--user), so the working
 # directory has to be writable by an arbitrary uid.
