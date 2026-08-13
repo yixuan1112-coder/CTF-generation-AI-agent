@@ -24,7 +24,11 @@ jobs:
       - name: Install core dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pycryptodome sympy flask
+          # Install the project itself rather than re-listing its dependencies
+          # here. The hand-written list used to omit jsonschema, which every
+          # import of autoctf_gan needs, so this job failed before it reached a
+          # single test. pyproject.toml is now the one place that list lives.
+          pip install -e .
 
       # fpylll needs fplll + GMP/MPFR headers and is the only optional piece.
       # Without it crypto_ladder drops the Boneh-Durfee rung and the tests that
