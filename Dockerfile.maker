@@ -23,7 +23,15 @@ RUN apt-get update \
 # jsonschema is not optional: autoctf_gan/__init__.py imports generator, which
 # imports schema, which imports it at module level — so `python -m
 # autoctf_gan.service` fails on the first request without it.
-RUN pip install --no-cache-dir pycryptodome==3.20.0 jsonschema==4.23.0
+#
+# sympy is not optional either, for the same shape of reason one rung further
+# out: lattice.py's boneh_durfee() does `from sympy import Poly, expand,
+# resultant, symbols`. Without it the Boneh-Durfee solver raises
+# ModuleNotFoundError, verify_spec reports "attack failed (key not weak /
+# unsolvable)", and the maker rejects the rung -- so EVERY crypto match stalled
+# at Gen-5 with evolution_stalled and the 7th rung was unreachable for everyone,
+# even with fpylll installed below.
+RUN pip install --no-cache-dir pycryptodome==3.20.0 jsonschema==4.23.0 sympy==1.13.3
 
 # The Boneh-Durfee rung needs a lattice reduction library. It is a source build
 # with heavy dependencies, so it is best-effort: crypto_ladder already drops that
