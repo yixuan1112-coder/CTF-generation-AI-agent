@@ -54,11 +54,21 @@ class Track:
     offered_reason: str = ""
     cross_track: bool = True
     authoring: bool = True
+    # Service tracks (web) stand up a live target container per match, so they
+    # are only playable where a Docker daemon exists — verification can fall back
+    # to an in-process server, but a real match cannot.
+    needs_docker: bool = False
 
     @property
     def available(self) -> bool:
-        """Offered by design AND buildable on this host."""
-        return self.offered and self.campaign.start_available
+        """Offered by design, buildable on this host, and — for service tracks —
+        backed by a Docker daemon to run the live instance."""
+        if not (self.offered and self.campaign.start_available):
+            return False
+        if self.needs_docker:
+            from .sandbox import docker_available
+            return docker_available()
+        return True
 
     @property
     def unavailable_reason(self) -> str:
@@ -67,6 +77,11 @@ class Track:
         if not self.campaign.start_available:
             return (f"This host cannot build the starting ladder: "
                     + "; ".join(self.campaign.describe_skipped()))
+        if self.needs_docker:
+            from .sandbox import docker_available
+            if not docker_available():
+                return ("This is a service challenge: it needs a Docker daemon to "
+                        "stand up the live target each match. This host has none.")
         return ""
 
     @property
@@ -154,16 +169,20 @@ def all_tracks() -> dict[str, Track]:
                    "technique."),
             per_gen_timeout_s=120,
             match_budget_s=900,
-            offered=False,
+            # Now offered: the arena stands up a live target per match (see
+            # instance.WebInstance / runner.run_match), so the flag exists only
+            # in the running container and the agent wins by attacking it over
+            # the network. `available` still gates on the host being able to
+            # build the ladder, so a Docker-less host will not advertise it.
+            offered=True,
+            needs_docker=True,
             cross_track=False,
             authoring=False,
             offered_reason=(
                 "This is a service challenge: the flag is injected into the running "
                 "container as $FLAG at deploy time, so it exists nowhere in the files "
-                "an agent receives. Booting the supplied app.py locally yields only "
-                "flag{replace_at_deployment}. Until the arena can hand each match a "
-                "live instance to attack, no agent could win this track on merit, so "
-                "it is not offered. The ladder itself is sound and its rungs verify."),
+                "an agent receives. It needs a Docker daemon to stand up the live "
+                "target; this host has none, so the track is not offered here."),
         ),
     }
 

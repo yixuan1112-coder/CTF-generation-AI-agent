@@ -170,9 +170,9 @@ class SandboxAgent:
     def __init__(self, agent_dir: str, entry: str, limits: Limits, backend: str = "auto"):
         self.agent_dir, self.entry, self.limits, self.backend = agent_dir, entry, limits, backend
 
-    def attempt(self, challenge: dict) -> AgentRun:
+    def attempt(self, challenge: dict, *, network: str = "") -> AgentRun:
         return run_agent(self.agent_dir, self.entry, challenge, self.limits,
-                         backend=self.backend)
+                         backend=self.backend, network=network)
 
 
 class ImageAgent:
@@ -185,14 +185,14 @@ class ImageAgent:
     def __init__(self, image_ref: str, entry: str, limits: Limits):
         self.image_ref, self.entry, self.limits = image_ref, entry, limits
 
-    def attempt(self, challenge: dict) -> AgentRun:
+    def attempt(self, challenge: dict, *, network: str = "") -> AgentRun:
         if not self.image_ref:
             return AgentRun(ok=False, backend="docker",
                             error="this agent's image is no longer on the arena host "
                                   "(each team keeps only its most recent image) — "
                                   "resubmit it to run another match")
         return run_agent(None, self.entry, challenge, self.limits,
-                         image=self.image_ref)
+                         image=self.image_ref, network=network)
 
 
 class RemoteAgent:
@@ -201,7 +201,15 @@ class RemoteAgent:
     def __init__(self, url: str, token: str = "", timeout: int = 120):
         self.url, self.token, self.timeout = url, token, timeout
 
-    def attempt(self, challenge: dict) -> AgentRun:
+    def attempt(self, challenge: dict, *, network: str = "") -> AgentRun:
+        if network:
+            # A remote agent runs off-box; it cannot join the arena's --internal
+            # instance network, so it can never reach a web target. Fail clearly
+            # rather than hand it a URL it cannot route to.
+            return AgentRun(ok=False, backend="remote",
+                            error="remote agents cannot play the web track — its "
+                                  "target lives on an internal network only an "
+                                  "uploaded or image agent can join")
         body = json.dumps({
             "challenge_id": challenge.get("challenge_id"),
             "gen": challenge.get("gen"),
@@ -210,6 +218,7 @@ class RemoteAgent:
             "story": challenge.get("story"),
             "hints": challenge.get("hints") or [],
             "files": challenge.get("files") or {},
+            "target_url": challenge.get("target_url"),
             "time_limit_s": self.timeout,
         }).encode()
         req = urllib.request.Request(self.url, data=body, method="POST")

@@ -291,6 +291,10 @@ def _stage(work: Path, agent_dir: Path | None, entry: str, challenge: dict,
     payload = {k: challenge.get(k) for k in
                ("challenge_id", "gen", "category", "title", "story", "hints")}
     payload["files"] = files
+    # Service-style tracks (web) hand the agent a live target to attack instead
+    # of a flag hidden in the files. Only present for those; None otherwise.
+    if challenge.get("target_url"):
+        payload["target_url"] = challenge["target_url"]
     payload["time_limit_s"] = limits.wall_seconds
     (work / "_input.json").write_text(json.dumps(payload), encoding="utf-8")
     (work / "_harness.py").write_text(HARNESS, encoding="utf-8")
@@ -456,7 +460,7 @@ def _kill_group(proc: subprocess.Popen) -> None:
 
 
 def docker_run_argv(work: Path, env: dict[str, str], limits: Limits,
-                    image: str) -> list[str]:
+                    image: str, network: str = "") -> list[str]:
     """The confinement flags every container the arena starts is subject to.
 
     Shared with `images.probe_image` so a team's image is validated under exactly
@@ -468,10 +472,16 @@ def docker_run_argv(work: Path, env: dict[str, str], limits: Limits,
     whatever ENTRYPOINT the image declared, so an image with its own entrypoint
     would run that instead of the harness. Overriding it means the image's
     ENTRYPOINT, CMD and USER are all ignored.
+
+    `network` joins the agent to a specific network — used for the web track,
+    where the agent must reach a live target. That network is created
+    `--internal` (see instance.WebInstance), so the agent can talk to the target
+    and nothing off-box. With no network given the agent gets `--network none`.
     """
+    net = network or ("none" if not limits.allow_network else "bridge")
     argv = [
         "docker", "run", "--rm", "-i",
-        "--network", "none" if not limits.allow_network else "bridge",
+        "--network", net,
         "--memory", f"{limits.memory_mb}m", "--memory-swap", f"{limits.memory_mb}m",
         "--pids-limit", str(limits.max_processes),
         "--cpus", "1.0",
@@ -490,12 +500,17 @@ def docker_run_argv(work: Path, env: dict[str, str], limits: Limits,
 
 def _run_docker(work: Path, entry: str, limits: Limits, *,
                 image: str = DEFAULT_IMAGE,
-                agent_dir_in_image: str | None = None) -> AgentRun:
-    env = _child_env(entry, limits, netns=not limits.allow_network,
+                agent_dir_in_image: str | None = None,
+                network: str = "") -> AgentRun:
+    # netns=True whenever the agent has a namespace (always, under docker): that
+    # keeps the coarse socket_guard off so the agent may use loopback and, on a
+    # web instance network, reach the target. Egress is stopped by the network
+    # (--network none, or the --internal instance net), not by removing sockets.
+    env = _child_env(entry, limits, netns=True,
                      agent_dir_in_image=agent_dir_in_image)
     env["ARENA_LIMITS"] = json.dumps({**json.loads(env["ARENA_LIMITS"]),
                                       "skip_as_limit": True})
-    cmd = docker_run_argv(work, env, limits, image)
+    cmd = docker_run_argv(work, env, limits, image, network)
     limits_hit: list[str] = []
     started = time.monotonic()
     try:
@@ -511,16 +526,26 @@ def _run_docker(work: Path, entry: str, limits: Limits, *,
 
 def run_agent(agent_dir: Path | str | None, entry: str, challenge: dict,
               limits: Limits | None = None, *, backend: str = "auto",
-              image: str = "", agent_dir_in_image: str = "") -> AgentRun:
+              image: str = "", agent_dir_in_image: str = "",
+              network: str = "") -> AgentRun:
     """Execute one solve attempt. Never raises on agent misbehaviour.
 
     Pass `image` (and `agent_dir_in_image`) to run the team's own container
     instead of the arena's. That path is docker-only and never falls back to a
     subprocess: the fallback would run *no agent at all*, since an image agent's
     code exists only inside the image.
+
+    Pass `network` to join the agent to a live-instance network (the web track).
+    That is docker-only too: a subprocess agent cannot join a docker network, so
+    a networked request never falls back — there would be no target to reach.
     """
     limits = limits or Limits()
     agent_dir = Path(agent_dir) if agent_dir is not None else None
+
+    if network and not docker_available():
+        return AgentRun(ok=False, backend="docker",
+                        error="live-instance (web) matches need a Docker daemon, "
+                              "which this arena has not got")
 
     if image:
         if not docker_available():
@@ -531,7 +556,8 @@ def run_agent(agent_dir: Path | str | None, entry: str, challenge: dict,
         try:
             _stage(work, None, entry, challenge, limits)
             run = _run_docker(work, entry, limits, image=image,
-                              agent_dir_in_image=agent_dir_in_image or IMAGE_AGENT_DIR)
+                              agent_dir_in_image=agent_dir_in_image or IMAGE_AGENT_DIR,
+                              network=network)
             if run.exit_code == 125:
                 run = AgentRun(ok=False, backend="docker", exit_code=125,
                                seconds=run.seconds, stderr=run.stderr,
@@ -544,14 +570,17 @@ def run_agent(agent_dir: Path | str | None, entry: str, challenge: dict,
         finally:
             shutil.rmtree(work, ignore_errors=True)
 
-    use_docker = backend == "docker" or (backend == "auto" and docker_available())
+    use_docker = bool(network) or backend == "docker" or (
+        backend == "auto" and docker_available())
 
     work = Path(tempfile.mkdtemp(prefix="arena-run-"))
     try:
         _stage(work, agent_dir, entry, challenge, limits)
         if use_docker:
-            run = _run_docker(work, entry, limits)
-            if run.exit_code == 125:            # docker itself failed to start
+            run = _run_docker(work, entry, limits, network=network)
+            # A networked (web) run must not fall back to subprocess: there is a
+            # live target on a docker network a subprocess agent cannot reach.
+            if run.exit_code == 125 and not network:
                 run = _run_subprocess(work, entry, limits)
         else:
             run = _run_subprocess(work, entry, limits)

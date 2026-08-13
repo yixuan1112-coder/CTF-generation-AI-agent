@@ -248,6 +248,18 @@ class ImageIntakeTests(unittest.TestCase):
                 images_mod.inspect_tarball(self._tarball([tag]))
             self.assertIn("reserved", str(caught.exception))
 
+    def test_ordinary_names_that_merely_mention_the_project_are_allowed(self):
+        """The reservation must not swallow innocent submissions.
+
+        `autoctf-demo-agent` is this repo's own teaching image, and naming your
+        image after the contest you are entering is the obvious thing to do — a
+        rule that refuses those fires mostly on people doing nothing wrong.
+        """
+        for tag in ("autoctf-demo-agent:latest", "autoctf-solver:v3",
+                    "myteam/autoctf-agent:1"):
+            got = images_mod.inspect_tarball(self._tarball([tag]))
+            self.assertEqual(got["repo_tags"], [tag])
+
     def test_docker_export_output_is_refused_with_a_useful_reason(self):
         import tarfile
         path = self.tmp / "export.tar"
@@ -626,15 +638,24 @@ class TrackLadderIntegrityTests(unittest.TestCase):
 class TrackAvailabilityTests(unittest.TestCase):
     """A track is only offered if an agent could win it from the files it gets."""
 
-    def test_web_is_gated_with_a_stated_reason(self):
+    def test_web_is_playable_where_docker_can_host_the_instance(self):
+        # The web track stands up a live target per match, so it is offered
+        # exactly where a Docker daemon exists to run it; elsewhere it is gated
+        # with a stated reason rather than handing out an unwinnable match.
+        from arena_platform.sandbox import docker_available
         web = get_track("web")
-        self.assertFalse(web.available)
-        self.assertTrue(web.unavailable_reason)
+        if docker_available():
+            self.assertTrue(web.available)
+            self.assertFalse(web.unavailable_reason)
+        else:
+            self.assertFalse(web.available)
+            self.assertTrue(web.unavailable_reason)
 
-    def test_playable_set_excludes_gated_tracks(self):
+    def test_playable_set_tracks_the_web_instance_broker(self):
+        from arena_platform.sandbox import docker_available
         from arena_platform.tracks import playable_tracks
-        self.assertNotIn("web", playable_tracks())
         self.assertIn("crypto", playable_tracks())
+        self.assertEqual("web" in playable_tracks(), docker_available())
 
     def test_web_flag_really_is_absent_from_player_files(self):
         """The reason for the gate, asserted rather than assumed."""

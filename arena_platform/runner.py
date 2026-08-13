@@ -205,7 +205,26 @@ class MatchEngine:
                         "title": comp.spec.title,
                         "plan_source": comp.spec.mechanics.get("plan_source", "catalog")})
 
-            run = client.attempt(challenge)
+            # A service-style challenge (web) is not files to read — it is a
+            # running target. Stand one up on a per-match --internal network,
+            # hand the agent its URL, and let the agent join that network so it
+            # can attack the target and nothing off-box. Torn down straight
+            # after the attempt, win or lose.
+            if comp.spec.delivery == "web":
+                from .instance import InstanceError, WebInstance
+                emit("instance.starting", {"gen": gen, "rung": track.rung_name(gen)})
+                try:
+                    with WebInstance(comp.spec) as inst:
+                        challenge["target_url"] = inst.url
+                        emit("instance.ready", {"gen": gen, "target_url": inst.url})
+                        run = client.attempt(challenge, network=inst.network)
+                except InstanceError as exc:
+                    from .sandbox import AgentRun
+                    run = AgentRun(ok=False, backend="docker",
+                                   error=f"the arena could not stand up this "
+                                         f"challenge instance: {exc}")
+            else:
+                run = client.attempt(challenge)
             emit("agent.attempt", {
                 "gen": gen, "rung": track.rung_name(gen),
                 "seconds": run.seconds, "backend": run.backend,
