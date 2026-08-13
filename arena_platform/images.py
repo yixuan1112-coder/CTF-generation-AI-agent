@@ -85,9 +85,15 @@ PROBE_TIMEOUT_S = 120
 # readable for the operator.
 NAMESPACE = "arena-team"
 
-# Names a submitted tarball may not claim. The arena's own runner image is the
-# one that matters — owning it means owning every other team's match.
-PROTECTED_PREFIXES = (NAMESPACE + "/", "autoctf-", "autoctf_")
+# Names a submitted image may not claim. The arena's own runner image is the one
+# that matters — owning it means owning every other team's match.
+#
+# Deliberately narrow. An earlier version reserved all of `autoctf-*`, which
+# also refused `autoctf-demo-agent` — the project's own teaching image — and
+# would refuse any competitor who names their image after the contest they are
+# entering. That is a rule that fires almost entirely on innocent submissions.
+# Reserve the arena's infrastructure names and nothing more.
+PROTECTED_PREFIXES = (NAMESPACE + "/", "autoctf-arena", "autoctf_arena")
 
 
 class ImageError(ValueError):

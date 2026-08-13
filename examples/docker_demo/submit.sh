@@ -42,11 +42,16 @@ if [[ -n "${PUSH:-}" ]]; then
   docker push "$PUSH"
   echo "  the repository must be PUBLIC — the arena pulls anonymously"
 else
-  # gzip because the arena caps the upload; `docker save` output compresses hard.
+  # gzip is accepted but rarely helps much any more: modern `docker save` writes
+  # an OCI layout whose layers are already compressed blobs (measured: 44 MB raw
+  # vs 44 MB gzipped for the demo image). It still costs nothing, and it does
+  # help on older Docker versions that save uncompressed layers.
   echo
   echo "▸ saving to $TARBALL"
   docker save "$IMAGE" | gzip > "$TARBALL"
   echo "  $(du -h "$TARBALL" | cut -f1)"
+  # What the arena caps is the UNPACKED size too, which is several times the
+  # tarball — the demo image is 44 MB saved and 187 MB on disk.
 fi
 
 if [[ -z "${TEAM:-}" && -z "${TOKEN:-}" ]]; then

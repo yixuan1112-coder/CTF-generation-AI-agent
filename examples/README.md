@@ -16,6 +16,26 @@ docker run --rm -it autoctf-demo-agent
 # or: ARENA=... TEAM="My Team" ./examples/docker_demo/submit.sh
 ```
 
+## `advanced_agent/` — the same circle, and a reason to be an image
+
+The follow-up to `docker_demo/`. Same loop, same contract, still no language
+model — but preconditions over *measured features* instead of filenames, memory
+keyed **per challenge signature**, expected-value-per-second scheduling with a
+time budget, and 10 skills including a real Boneh-Durfee lattice attack.
+
+That attack needs `fpylll` + `sympy`, which a `.zip` agent cannot guarantee — so
+this folder is the measurement behind the whole image-submission feature:
+
+```
+advanced image (ships fpylll + sympy)   6/6 rungs — bonehdurfee in 7.67s
+simple demo image (stdlib only)         5/6 rungs — stuck at bonehdurfee
+```
+
+```bash
+docker build -t autoctf-advanced-agent -f examples/advanced_agent/Dockerfile .
+docker run --rm -it autoctf-advanced-agent
+```
+
 ## `champion_agent/` — clears the whole crypto ladder
 
 The starter agent (`../team_agent.py`) has six classical RSA attacks and no lattice

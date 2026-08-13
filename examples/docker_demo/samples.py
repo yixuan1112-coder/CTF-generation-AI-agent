@@ -123,12 +123,53 @@ def _fermat(rng: random.Random) -> dict:
             "c.txt": str(pow(_to_int(FLAG), e, n))}
 
 
+def _boneh_durfee(rng: random.Random) -> dict:
+    """d too large for Wiener, small enough for a lattice.
+
+    Wiener's continued-fraction attack needs d < n^0.25/3; Boneh-Durfee reaches
+    about n^0.292. Sizing d at roughly n^0.27 lands it squarely between the two,
+    so this rung separates an agent that ships a lattice library from one that
+    does not — which is the whole argument for submitting an image.
+    """
+    while True:
+        p, q = _prime(256, rng), _prime(256, rng)
+        if p == q:
+            continue
+        n, phi = p * q, (p - 1) * (q - 1)
+
+        # d must land in the gap between the two attacks, and the gap is narrow:
+        #   Wiener  needs d < n^0.25 / 3   (≈ 126 bits here) — must NOT reach
+        #   lattice.py is verified to n^0.255 (≈ 130 bits)   — must reach
+        # 0.255 is that verified point, measured over 8 random instances at
+        # 8/8 for the lattice agent and 0/8 for the stdlib one. Do not raise it:
+        # Boneh-Durfee's theoretical 0.292 is not what this implementation
+        # reaches at mm=4, and instances above ~0.26 start failing. Lower is
+        # also wrong — Wiener's bound is sufficient, not necessary, so at 0.253
+        # the stdlib agent occasionally got lucky and the contrast broke.
+        #
+        # Sizing d by *bit length* rather than n**0.25 also avoids the float
+        # overflow that raising a 512-bit int to a fractional power causes.
+        d_bits = int(n.bit_length() * 0.255)
+        d = rng.getrandbits(d_bits) | (1 << (d_bits - 1)) | 1
+        while math.gcd(d, phi) != 1:
+            d += 2
+        try:
+            e = pow(d, -1, phi)
+        except ValueError:
+            continue
+        if e.bit_length() < 0.9 * n.bit_length():
+            continue                        # want e large, the small-d fingerprint
+        return {"n.txt": str(n), "e.txt": str(e),
+                "c.txt": str(pow(_to_int(FLAG), e, n))}
+
+
 RUNGS = [
     ("smalle", "Gen-0", "Small public exponent", _small_exponent),
     ("hastad", "Gen-1", "Håstad broadcast", _hastad),
     ("commonmod", "Gen-2", "Common modulus", _common_modulus),
     ("wiener", "Gen-3", "Wiener (small d)", _wiener),
     ("fermat", "Gen-4", "Fermat (close primes)", _fermat),
+    ("bonehdurfee", "Gen-5", "Boneh-Durfee (lattice)", _boneh_durfee),
 ]
 
 

@@ -18,7 +18,8 @@ import subprocess
 import sys
 import time
 
-AGENT_PATH = os.environ.get("ARENA_AGENT_DIR", "/opt/agent") + "/agent.py"
+AGENT_DIR = os.environ.get("ARENA_AGENT_DIR", "/opt/agent")
+AGENT_PATH = AGENT_DIR + "/agent.py"
 DEMO_DIR = os.path.dirname(os.path.abspath(__file__))
 
 BOLD, DIM, GREEN, RED, CYAN, OFF = (
@@ -28,7 +29,18 @@ if not sys.stdout.isatty() or os.environ.get("NO_COLOR"):
 
 
 def load_agent():
-    """Import the agent exactly the way the arena's harness does."""
+    """Import the agent exactly the way the arena's harness does.
+
+    The sys.path line is not optional decoration. An agent that ships helper
+    modules next to agent.py — a lattice library, a compiled extension — does
+    `from lattice import …` at the top, and without its own directory on the
+    path that import fails. A well-written agent degrades quietly when an
+    optional dependency is missing, so the failure shows up not as an error but
+    as a skill that silently never runs. This menu exists to tell you your image
+    is sound, so it has to reproduce the harness faithfully or it lies to you.
+    """
+    if AGENT_DIR not in sys.path:
+        sys.path.insert(0, AGENT_DIR)
     spec = importlib.util.spec_from_file_location("team_agent_module", AGENT_PATH)
     if spec is None or spec.loader is None:
         raise ImportError(f"cannot load {AGENT_PATH}")
@@ -71,16 +83,48 @@ def run_agent(verbose: bool = False) -> int:
               f"{(flag or 'no flag'):<34} {elapsed:5.2f}s", flush=True)
 
     print(f"\n{BOLD}{solved}/{len(samples.RUNGS)} rungs solved.{OFF}")
-    memory = getattr(getattr(agent, "_AGENT", None), "memory", None)
-    if memory is not None and getattr(memory, "skill_wins", None):
-        print(f"\n{CYAN}What the memory kept across those five challenges:{OFF}")
+    show_memory(getattr(getattr(agent, "_AGENT", None), "memory", None), len(samples.RUNGS))
+    return 0 if solved == len(samples.RUNGS) else 1
+
+
+def show_memory(memory, n_challenges: int) -> None:
+    """Print whatever memory this agent kept.
+
+    The two demo agents remember different things — the simple one keeps a
+    single win-rate per skill, the advanced one keeps them per challenge
+    signature — so render whichever shape is present rather than assuming.
+    """
+    if memory is None:
+        return
+
+    if hasattr(memory, "sig_uses"):                      # advanced agent
+        if not memory.uses:
+            return
+        print(f"\n{CYAN}What the memory kept across those "
+              f"{n_challenges} challenges:{OFF}")
+        for sig, counts in memory.sig_uses.items():
+            print(f"    {BOLD}{sig}{OFF}")
+            for skill, uses in sorted(counts.items(), key=lambda kv: -kv[1]):
+                wins = memory.sig_wins[sig][skill]
+                secs = memory.expected_seconds(skill, 0.0)
+                print(f"        {skill:<18} {wins}/{uses} won · "
+                      f"~{secs:.2f}s · score {memory.score(skill, sig):.2f}")
+        print(f"{DIM}    Scores are kept PER SIGNATURE, so what it learns on a "
+              f"1024-bit\n    small-e challenge does not mislead it on a "
+              f"512-bit huge-e one. DECIDE\n    ranks by score ÷ expected "
+              f"seconds, so a cheap long shot beats an\n    expensive "
+              f"near-certainty when the clock is short.{OFF}")
+        return
+
+    if getattr(memory, "skill_wins", None):              # simple demo agent
+        print(f"\n{CYAN}What the memory kept across those "
+              f"{n_challenges} challenges:{OFF}")
         for skill, uses in sorted(memory.skill_uses.items(), key=lambda kv: -kv[1]):
             wins = memory.skill_wins[skill]
             print(f"    {skill:<20} {wins}/{uses} attempts produced a flag "
                   f"→ score {memory.score(skill):.2f}")
         print(f"{DIM}    That score is the ordering DECIDE uses next time. The agent "
               f"got better\n    at choosing without anyone retraining anything.{OFF}")
-    return 0 if solved == len(samples.RUNGS) else 1
 
 
 # ---------------------------------------------------------------------------
@@ -114,6 +158,44 @@ def check() -> int:
     except Exception as exc:
         report("agent.py imports cleanly", False, f"{type(exc).__name__}: {exc}")
         report("agent.py defines a callable solve()", False)
+
+    # Helper modules shipped beside agent.py. A well-written agent wraps its
+    # optional imports in try/except so a missing library disables one skill
+    # instead of killing the run — which means a broken helper looks like
+    # success right up until the rung it was meant to win. Import each one
+    # explicitly so that failure is loud here instead of silent in a match.
+    try:
+        helpers = sorted(p for p in os.listdir(AGENT_DIR)
+                         if p.endswith(".py") and p != "agent.py")
+    except OSError:
+        helpers = []
+    for helper in helpers:
+        try:
+            importlib.import_module(helper[:-3])
+            report(f"helper {helper} imports", True)
+        except Exception as exc:
+            report(f"helper {helper} imports", False,
+                   f"{type(exc).__name__}: {exc}")
+
+    skills = getattr(module, "SKILLS", None) if "module" in dir() else None
+    if skills:
+        report(f"{len(skills)} skills registered", True)
+
+    # The deepest version of the same trap. A helper can import cleanly while
+    # the library it actually needs is broken, because well-written helpers
+    # defer and guard their optional imports — so "helper imports" goes green
+    # and the skill still never fires. Measured case: fpylll installs from a
+    # wheel but cannot import without cysignals, which pip does not pull in.
+    # Nothing above catches that; importing the declared modules does.
+    for skill in skills or []:
+        for dependency in getattr(skill, "needs", ()) or ():
+            try:
+                importlib.import_module(dependency)
+                report(f"'{getattr(skill, 'name', '?')}' can import {dependency}", True)
+            except Exception as exc:
+                report(f"'{getattr(skill, 'name', '?')}' can import {dependency}",
+                       False, f"{type(exc).__name__}: {exc} — this skill will "
+                              f"silently never run")
 
     print()
     if ok:
