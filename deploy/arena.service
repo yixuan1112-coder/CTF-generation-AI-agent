@@ -35,6 +35,14 @@ Environment=AUTOCTF_DESIGN=catalog
 # Redundant behind a public bind (the server sets it itself) but explicit is better.
 Environment=ARENA_BLOCK_PRIVATE_REMOTE=1
 Environment=ARENA_AGENT_MEMORY_MB=2048
+# Match working directories are bind-mounted into the agent container. PrivateTmp
+# below gives this service its own /tmp inside a mount namespace, but the Docker
+# daemon resolves -v source paths in the HOST namespace, where those paths do not
+# exist -- so /work mounted empty and every agent died with
+#   python: can't open file '/work/_harness.py'
+# Point TMPDIR at a real path under the data dir, which is in ReadWritePaths and
+# is the same path to dockerd as it is to us. Keeps PrivateTmp's hardening.
+Environment=TMPDIR=/var/lib/arena/tmp
 
 # Bound to loopback on purpose: the reverse proxy in front terminates TLS.
 ExecStart=/opt/arena/.venv/bin/python -m arena_platform.server \

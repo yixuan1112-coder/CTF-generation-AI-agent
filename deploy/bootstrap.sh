@@ -60,7 +60,10 @@ systemctl enable --now docker
 say "Creating the arena user and directories"
 id -u arena >/dev/null 2>&1 || useradd -r -m -d "$HOME_DIR" -s /usr/sbin/nologin arena
 usermod -aG docker arena
-mkdir -p "$DATA_DIR"
+# $DATA_DIR/tmp is where match working directories are built. It has to be a
+# real host path, not the service's PrivateTmp, or the bind mount into the agent
+# container resolves to nothing on the daemon side. arena.service sets TMPDIR here.
+mkdir -p "$DATA_DIR/tmp"
 chown -R arena:arena "$DATA_DIR"
 
 say "Fetching the arena"
