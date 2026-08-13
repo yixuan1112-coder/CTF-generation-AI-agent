@@ -1,5 +1,21 @@
 # Example agents
 
+## `docker_demo/` — package an agent as a Docker image
+
+The workshop kit. Builds one image that is both an interactive demo (`docker run -it` →
+a menu, and you choose to run the AI) and a valid submission you can upload unchanged.
+
+It teaches the **circle-memory** pattern — `PERCEIVE → RECALL → DECIDE → ACT → RECORD`
+over an explicit memory, with no language model, no prompts and no network anywhere in
+it — and the image contract: `/opt/agent/agent.py` defining `solve`, and `python` on
+`PATH`. See `docker_demo/README.md`.
+
+```bash
+docker build -t autoctf-demo-agent -f examples/docker_demo/Dockerfile .
+docker run --rm -it autoctf-demo-agent
+# or: ARENA=... TEAM="My Team" ./examples/docker_demo/submit.sh
+```
+
 ## `champion_agent/` — clears the whole crypto ladder
 
 The starter agent (`../team_agent.py`) has six classical RSA attacks and no lattice

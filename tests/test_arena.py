@@ -19,8 +19,9 @@ import zipfile
 from pathlib import Path
 
 from arena_platform import agents as agents_mod
+from arena_platform import images as images_mod
 from arena_platform.runner import MatchEngine, fresh_seed
-from arena_platform.sandbox import Limits, run_agent
+from arena_platform.sandbox import Limits, docker_run_argv, run_agent
 from arena_platform.store import Store, _rank_key
 from arena_platform.tracks import all_tracks, get_track, warmup
 
@@ -203,10 +204,241 @@ class UploadTests(unittest.TestCase):
                 agents_mod.validate_remote_url(bad)
 
 
+class ImageIntakeTests(unittest.TestCase):
+    """A team-supplied Docker image is the most dangerous thing the arena accepts.
+
+    These cover the checks that happen BEFORE any byte reaches dockerd, so they
+    run on a host with no Docker at all — which is the point: the guard that
+    stops a tarball from hijacking the arena's own image must not depend on the
+    daemon it is protecting.
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def _tarball(self, repo_tags, *, name="img.tar", images=1, digest=None):
+        """A minimal `docker save`-shaped archive."""
+        import tarfile
+        digest = digest or ("a" * 64)
+        path = self.tmp / name
+        manifest = [{"Config": f"blobs/sha256/{digest}", "RepoTags": repo_tags,
+                     "Layers": []} for _ in range(images)]
+        blob = json.dumps(manifest).encode()
+        with tarfile.open(path, "w") as tf:
+            info = tarfile.TarInfo("manifest.json")
+            info.size = len(blob)
+            tf.addfile(info, io.BytesIO(blob))
+        return path
+
+    def test_reads_the_image_id_and_tags(self):
+        got = images_mod.inspect_tarball(self._tarball(["my-agent:latest"]))
+        self.assertEqual(got["image_id"], "sha256:" + "a" * 64)
+        self.assertEqual(got["repo_tags"], ["my-agent:latest"])
+
+    def test_tarball_may_not_claim_the_arenas_own_image(self):
+        """The attack this whole module exists to stop.
+
+        `docker load` honours RepoTags, so a tarball tagged as the runner image
+        would replace the container every OTHER team's match runs in.
+        """
+        for tag in ("autoctf-arena-agent:latest", "autoctf-arena-agent:v2",
+                    "arena-team/agent_deadbeef:latest"):
+            with self.assertRaises(images_mod.ImageError) as caught:
+                images_mod.inspect_tarball(self._tarball([tag]))
+            self.assertIn("reserved", str(caught.exception))
+
+    def test_docker_export_output_is_refused_with_a_useful_reason(self):
+        import tarfile
+        path = self.tmp / "export.tar"
+        with tarfile.open(path, "w") as tf:
+            info = tarfile.TarInfo("bin/sh")
+            info.size = 0
+            tf.addfile(info, io.BytesIO(b""))
+        with self.assertRaises(images_mod.ImageError) as caught:
+            images_mod.inspect_tarball(path)
+        self.assertIn("docker save", str(caught.exception))
+
+    def test_multi_image_archive_is_refused(self):
+        with self.assertRaises(images_mod.ImageError) as caught:
+            images_mod.inspect_tarball(self._tarball(["a:1"], images=3))
+        self.assertIn("3 images", str(caught.exception))
+
+    def test_non_tar_and_empty_are_refused(self):
+        junk = self.tmp / "junk.tar"
+        junk.write_bytes(b"not a tar at all")
+        empty = self.tmp / "empty.tar"
+        empty.write_bytes(b"")
+        for path in (junk, empty):
+            with self.assertRaises(images_mod.ImageError):
+                images_mod.inspect_tarball(path)
+
+    def test_oversized_upload_is_refused_before_it_is_parsed(self):
+        path = self._tarball(["a:1"])
+        original = images_mod.MAX_IMAGE_BYTES
+        images_mod.MAX_IMAGE_BYTES = 1
+        self.addCleanup(setattr, images_mod, "MAX_IMAGE_BYTES", original)
+        with self.assertRaises(images_mod.ImageError) as caught:
+            images_mod.inspect_tarball(path)
+        self.assertIn("limit", str(caught.exception))
+
+    def test_loading_without_a_docker_daemon_is_a_clean_refusal(self):
+        if images_mod.images_supported():
+            self.skipTest("this host has Docker; the no-daemon path cannot be reached")
+        with self.assertRaises(images_mod.ImageError) as caught:
+            images_mod.load_image(self._tarball(["a:1"]), "agent_x")
+        self.assertIn("upload a .py or .zip", str(caught.exception))
+
+
+class ImageReferenceTests(unittest.TestCase):
+    """The registry route: the team pushes, the arena pulls by address.
+
+    `docker pull` runs on the arena host with the arena's routing, so the
+    reference is attacker-controlled input that steers an outbound fetch.
+    """
+
+    def test_docker_hub_references_are_accepted(self):
+        """No registry host, so no DNS — these must pass offline."""
+        for ref in ("myuser/my-agent:v1", "myuser/my-agent", "python",
+                    "myuser/my-agent@sha256:" + "a" * 64):
+            self.assertEqual(images_mod.validate_image_ref(ref), ref)
+
+    def test_third_party_registries_are_accepted_when_public(self):
+        """DNS is stubbed: this asserts the grammar, not the resolver."""
+        original = images_mod._is_private_host
+        images_mod._is_private_host = lambda host: False
+        self.addCleanup(setattr, images_mod, "_is_private_host", original)
+        for ref in ("ghcr.io/org/team-agent:2024.1",
+                    "registry.example.com:5000/team/agent:latest"):
+            self.assertEqual(images_mod.validate_image_ref(ref), ref)
+
+    def test_an_unresolvable_registry_is_treated_as_unsafe(self):
+        """Fail closed: a name we cannot resolve might resolve internally on the
+        arena host, where the daemon actually runs."""
+        with self.assertRaises(images_mod.ImageError):
+            images_mod.validate_image_ref(
+                "no-such-registry.invalid/team/agent:v1")
+
+    def test_malformed_references_are_refused(self):
+        for ref in ("", "   ", "https://docker.io/user/img",
+                    "UPPER/Case:v1", "user/img:bad tag", "user//img"):
+            with self.assertRaises(images_mod.ImageError):
+                images_mod.validate_image_ref(ref)
+
+    def test_a_url_gets_a_targeted_hint(self):
+        with self.assertRaises(images_mod.ImageError) as caught:
+            images_mod.validate_image_ref("https://hub.docker.com/u/me/agent")
+        self.assertIn("drop the scheme", str(caught.exception))
+
+    def test_reserved_names_are_refused(self):
+        for ref in ("autoctf-arena-agent:latest", "someone/autoctf-arena-agent:v1",
+                    "arena-team/agent_abc:latest"):
+            with self.assertRaises(images_mod.ImageError) as caught:
+                images_mod.validate_image_ref(ref)
+            self.assertIn("reserved", str(caught.exception))
+
+    def test_the_arena_will_not_pull_from_its_own_network(self):
+        """Otherwise a reference is a way to make the daemon fetch from inside."""
+        for ref in ("localhost:5000/x/y:1", "127.0.0.1:5000/x/y:1",
+                    "10.0.0.5:5000/x/y:1", "192.168.1.10/x/y"):
+            with self.assertRaises(images_mod.ImageError) as caught:
+                images_mod.validate_image_ref(ref)
+            self.assertIn("private or loopback", str(caught.exception))
+
+    def test_a_bare_user_name_is_not_mistaken_for_a_registry(self):
+        """`myuser/img` must read myuser as a Docker Hub account, not a host —
+        otherwise every Hub reference fails the private-address check."""
+        self.assertEqual(images_mod._registry_host("myuser/img:v1"), "")
+        self.assertEqual(images_mod._registry_host("ghcr.io/org/img"), "ghcr.io")
+        self.assertEqual(images_mod._registry_host("localhost:5000/img"), "localhost:5000")
+
+
+class ImageAgentTests(unittest.TestCase):
+    def test_build_client_dispatches_on_kind(self):
+        row = {"kind": "image", "image_ref": "arena-team/agent_x:latest",
+               "entry": "agent.py"}
+        client = agents_mod.build_client(row, Limits())
+        self.assertIsInstance(client, agents_mod.ImageAgent)
+        self.assertEqual(client.kind, "image")
+
+    def test_a_pruned_image_fails_with_advice_not_a_docker_error(self):
+        """Each team keeps one image, so an older agent's ref is blanked.
+
+        Rerunning that agent must say what to do, not surface a raw
+        "No such image" from the daemon.
+        """
+        client = agents_mod.build_client(
+            {"kind": "image", "image_ref": "", "entry": "agent.py"}, Limits())
+        run = client.attempt(CHALLENGE)
+        self.assertFalse(run.ok)
+        self.assertIn("resubmit", run.error)
+
+    def test_run_flags_confine_the_teams_own_image(self):
+        """The image supplies the filesystem; the arena supplies the rules.
+
+        --entrypoint is the load-bearing one: without it, `docker run IMAGE
+        python …` appends those words to the image's OWN entrypoint, so a team
+        could run anything it liked instead of the harness.
+        """
+        argv = docker_run_argv(Path("/tmp/work"), {"ARENA_ENTRY": "agent.py"},
+                               Limits(memory_mb=777, max_processes=42),
+                               "arena-team/agent_x:latest")
+        self.assertIn("--entrypoint", argv)
+        self.assertEqual(argv[argv.index("--entrypoint") + 1], "python")
+        self.assertEqual(argv[argv.index("--network") + 1], "none")
+        self.assertEqual(argv[argv.index("--memory") + 1], "777m")
+        self.assertEqual(argv[argv.index("--pids-limit") + 1], "42")
+        self.assertIn("--cap-drop", argv)
+        self.assertEqual(argv[argv.index("--security-opt") + 1], "no-new-privileges")
+        self.assertEqual(argv[-4:], ["arena-team/agent_x:latest", "-E", "-B",
+                                     "_harness.py"])
+        self.assertTrue(any(a.startswith("--user") for a in argv) or "--user" in argv)
+
+    def test_host_site_packages_are_not_offered_to_an_image_agent(self):
+        """An image brings its own interpreter; host paths would be nonsense."""
+        from arena_platform.sandbox import _child_env
+        env = _child_env("agent.py", Limits(), agent_dir_in_image="/opt/agent")
+        self.assertEqual(json.loads(env["ARENA_SITE"]), [])
+        self.assertEqual(env["ARENA_AGENT_DIR"], "/opt/agent")
+
+
 class StoreTests(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.store = Store(self.tmp / "a.sqlite3")
+
+    def test_image_ref_column_is_added_to_an_existing_database(self):
+        """CREATE TABLE IF NOT EXISTS does nothing to a table that already exists.
+
+        The live arena has a populated agents table predating image support, so
+        without the migration the first image submission raises OperationalError
+        on a column the schema string claims is there.
+        """
+        import sqlite3
+        path = self.tmp / "legacy.sqlite3"
+        legacy = sqlite3.connect(path)
+        legacy.executescript("""
+            CREATE TABLE teams (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE,
+                token TEXT NOT NULL, contact TEXT DEFAULT '', created_at REAL NOT NULL);
+            CREATE TABLE agents (id TEXT PRIMARY KEY, team_id TEXT NOT NULL,
+                name TEXT NOT NULL, kind TEXT NOT NULL, entry TEXT DEFAULT 'agent.py',
+                source_dir TEXT DEFAULT '', remote_url TEXT DEFAULT '',
+                remote_token TEXT DEFAULT '', sha256 TEXT DEFAULT '',
+                size_bytes INTEGER DEFAULT 0, notes TEXT DEFAULT '',
+                created_at REAL NOT NULL);
+        """)
+        legacy.commit()
+        legacy.close()
+
+        store = Store(path)
+        team = store.create_team("legacy-team")
+        agent = store.create_agent(team_id=team["id"], name="img", kind="image",
+                                   image_ref="arena-team/agent_x:latest")
+        self.assertEqual(store.agent(agent["id"])["image_ref"],
+                         "arena-team/agent_x:latest")
+        store.clear_agent_image(agent["id"])
+        self.assertEqual(store.agent(agent["id"])["image_ref"], "")
         self.store = Store(self.tmp / "a.sqlite3")
 
     def _finished(self, name, reached, secs, at=1.0):
@@ -340,11 +572,17 @@ class TrackLadderIntegrityTests(unittest.TestCase):
     what `test_authored_rungs_never_repeat` covers.
     """
 
-    def _distinct_rungs(self, category: str, probe_depth: int = 9) -> int:
+    def _distinct_rungs(self, category: str, probe_depth: int = 9, *,
+                        cross_track: bool = True, authoring: bool = True) -> int:
         from autoctf_gan.competition import Competition
 
+        # Build the probe competition the way the TRACK runs it. A track that
+        # sets cross_track/authoring off (like web) clamps at its bounded rungs;
+        # probing with the defaults on would cross-track past them and count
+        # rungs the track never actually offers.
         comp = Competition(category=category, seed=99, evolve_on=1,
-                           max_gen=probe_depth, verify_deploy=True)
+                           max_gen=probe_depth, verify_deploy=True,
+                           cross_track=cross_track, authoring=authoring)
         team = comp.register("probe")["team_id"]
         signatures = []
         for _ in range(probe_depth + 1):
@@ -359,7 +597,10 @@ class TrackLadderIntegrityTests(unittest.TestCase):
         return len(distinct)
 
     def test_web_track_stops_where_the_ladder_clamps(self):
-        self.assertEqual(len(get_track("web").rungs), self._distinct_rungs("web"))
+        track = get_track("web")
+        self.assertEqual(len(track.rungs),
+                         self._distinct_rungs("web", cross_track=track.cross_track,
+                                              authoring=track.authoring))
 
     def test_crypto_segment_matches_the_engine_ladder(self):
         """The crypto SEGMENT must mirror the engine, whatever follows it.

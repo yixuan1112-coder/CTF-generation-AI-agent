@@ -1,15 +1,20 @@
-"""The two ways a real team gets its agent into a match.
+"""The three ways a real team gets its agent into a match.
 
   upload  — a .py file or a .zip of a package. The platform stores it and runs it
             per generation inside `sandbox.run_agent`. Same hardware for everyone,
             so wall-clock tiebreaks are fair.
+  image   — a Docker image the team built and `docker save`d. The platform loads
+            it and runs matches in the team's own container, so the team picks
+            the interpreter and the libraries while the arena still supplies the
+            hardware and the limits. Times stay comparable; see `images.py` for
+            the intake and its threat model.
   remote  — the team runs the agent on their own box (sage, GPUs, a private LLM)
             and registers an HTTPS endpoint. The platform POSTs the challenge and
             reads a flag back. Fair on depth, not on speed — the leaderboard
             labels these rows so nobody is misled.
 
-Both produce the same `sandbox.AgentRun`, so `runner.py` does not care which is
-which.
+All three produce the same `sandbox.AgentRun`, so `runner.py` does not care which
+is which.
 """
 from __future__ import annotations
 
@@ -170,6 +175,26 @@ class SandboxAgent:
                          backend=self.backend)
 
 
+class ImageAgent:
+    """The team's own container, started fresh for every rung, like every other
+    agent. No host code is staged in — `sandbox.run_agent` points the harness at
+    `/opt/agent` inside the image instead."""
+
+    kind = "image"
+
+    def __init__(self, image_ref: str, entry: str, limits: Limits):
+        self.image_ref, self.entry, self.limits = image_ref, entry, limits
+
+    def attempt(self, challenge: dict) -> AgentRun:
+        if not self.image_ref:
+            return AgentRun(ok=False, backend="docker",
+                            error="this agent's image is no longer on the arena host "
+                                  "(each team keeps only its most recent image) — "
+                                  "resubmit it to run another match")
+        return run_agent(None, self.entry, challenge, self.limits,
+                         image=self.image_ref)
+
+
 class RemoteAgent:
     kind = "remote"
 
@@ -226,5 +251,8 @@ def build_client(agent_row: dict, limits: Limits, backend: str = "auto"):
     if agent_row["kind"] == "remote":
         return RemoteAgent(agent_row["remote_url"], agent_row.get("remote_token", ""),
                            timeout=limits.wall_seconds)
+    if agent_row["kind"] == "image":
+        return ImageAgent(agent_row.get("image_ref") or "",
+                          agent_row.get("entry") or "agent.py", limits)
     return SandboxAgent(agent_row["source_dir"], agent_row.get("entry") or "agent.py",
                         limits, backend=backend)

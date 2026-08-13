@@ -19,7 +19,8 @@
     <h2>How a match works</h2>
     <ol style="padding-left:20px;color:var(--dim);line-height:1.85;margin:0">
       <li>You register a team and get a bearer token.</li>
-      <li>You submit an agent — uploaded code, or a remote endpoint you host.</li>
+      <li>You submit an agent — uploaded code, a Docker image you built, or a remote
+          endpoint you host.</li>
       <li>The arena spins up a challenge-maker <b style="color:var(--fg)">private to your match</b>,
           seeded with a fresh random value.</li>
       <li>It deploys Gen-0 and hands your agent exactly the files a human player would download.</li>
@@ -53,6 +54,88 @@
     <div class="row" style="margin-top:12px">
       <a class="btn ghost small" href="/api/template" download>Download the starter agent</a>
     </div>
+  </div>
+
+  <div class="panel" id="images">
+    <h2>Submitting a Docker image</h2>
+    <p style="color:var(--dim);font-size:13.5px;margin:0 0 12px">
+      An uploaded <code class="inline">.py</code> or <code class="inline">.zip</code> runs on
+      the arena's interpreter with the arena's libraries. That is fair, but it caps what you
+      can bring. Submit an <b style="color:var(--fg)">image</b> and you choose the base, the
+      Python version and every dependency — while still running on the arena's hardware under
+      the arena's limits, so your wall-clock stays comparable. (A remote agent gives you the
+      same freedom but moves execution to your box, which is why remote rows are ranked on
+      depth alone.)</p>
+
+    <h3 style="font-size:14px;margin:18px 0 8px">What your image must provide</h3>
+    <pre class="block">FROM python:3.11-slim          <span class="c"># or anything else — sage, CUDA, your own build</span>
+
+<span class="c"># 1. the agent, at exactly this path, defining solve(files, meta=None)</span>
+COPY agent.py /opt/agent/agent.py
+
+<span class="c"># 2. readable by an arbitrary uid: the arena runs you with --user, never root</span>
+RUN chmod -R a+rX /opt/agent
+
+<span class="c"># 3. `python` on PATH — the arena starts you with --entrypoint python</span></pre>
+    <p style="color:var(--dim);font-size:13.5px;margin:12px 0">
+      That is the entire contract. Your <code class="inline">ENTRYPOINT</code>,
+      <code class="inline">CMD</code> and <code class="inline">USER</code> are all overridden
+      at match time, so an image can carry an interactive demo or a dev shell without
+      affecting how it competes.</p>
+
+    <h3 style="font-size:14px;margin:18px 0 8px">Route 1 — push to a registry (normal)</h3>
+    <p style="color:var(--dim);font-size:13.5px;margin:0 0 10px">
+      Push anywhere public, then submit the <b style="color:var(--fg)">address</b>. Nothing
+      large crosses your connection to the arena, and shipping a fix is one
+      <code class="inline">docker push</code> away.</p>
+    <pre class="block">docker build -t youruser/my-agent:v1 .
+docker push youruser/my-agent:v1
+
+curl -X POST "$ARENA/api/agents" \
+     -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+     -d '{"kind":"image","name":"my-agent","image_ref":"youruser/my-agent:v1"}'</pre>
+    <p style="color:var(--dim);font-size:13.5px;margin:10px 0 0">
+      The repository must be <b style="color:var(--fg)">public</b> — the arena pulls
+      anonymously and never stores registry credentials. Pin a digest
+      (<code class="inline">@sha256:…</code>) if you want the run to be reproducible after you
+      move the tag.</p>
+
+    <h3 style="font-size:14px;margin:18px 0 8px">Route 2 — upload a tarball</h3>
+    <p style="color:var(--dim);font-size:13.5px;margin:0 0 10px">
+      For a private image, or a venue with no registry access.</p>
+    <pre class="block">docker build -t my-agent .
+docker save my-agent | gzip &gt; my-agent.tar.gz
+
+curl -X POST "$ARENA/api/agents?kind=image&amp;name=my-agent" \
+     -H "Authorization: Bearer $TOKEN" \
+     --data-binary @my-agent.tar.gz</pre>
+
+    <p style="color:var(--dim);font-size:13.5px;margin:14px 0 0">
+      Either way, the arena then <b style="color:var(--fg)">test-runs your image</b> — importing
+      <code class="inline">/opt/agent/agent.py</code> under the real match confinement — before
+      accepting the submission. A broken image is rejected at submission with the reason, not
+      halfway through a match.</p>
+
+    <div id="image-limits" style="margin-top:14px"></div>
+
+    <ul style="color:var(--dim);font-size:13.5px;line-height:1.8;margin:14px 0 0;padding-left:20px">
+      <li><b style="color:var(--fg)">One image per team.</b> Submitting a new one reclaims the
+          previous image from the host. Older agent rows keep their match history, but cannot
+          start a new match until you resubmit.</li>
+      <li><b style="color:var(--fg)">Use <code class="inline">docker save</code>, not
+          <code class="inline">docker export</code>.</b> Export flattens the filesystem and
+          throws away the image metadata, so there is nothing to load.</li>
+      <li><b style="color:var(--fg)">Save one image.</b> An archive holding several is refused —
+          the arena will not guess which one competes.</li>
+      <li><b style="color:var(--fg)">Reserved tags.</b> An image tagged as one of the arena's own
+          is refused outright. Retag and save again.</li>
+      <li><b style="color:var(--fg)">Same limits as everyone.</b> <code class="inline">--network
+          none</code>, dropped capabilities, no-new-privileges, and the memory / PID / CPU caps
+          listed below. Your image supplies the filesystem; the arena supplies the rules.</li>
+      <li><b style="color:var(--fg)">Keep it small.</b> Multi-stage builds and
+          <code class="inline">-slim</code> bases upload in seconds; a full CUDA image will not
+          fit. Deleting files in a later layer does not shrink the image.</li>
+    </ul>
   </div>
 
   <div class="panel">
@@ -172,14 +255,28 @@ api('/api/config').then(cfg => {
         <td style="font-family:var(--mono);font-size:12px">${x.rungs.map(esc).join(' → ')}</td>
         <td class="num">${x.per_gen_timeout_s}s</td>
         <td class="num">${Math.round(x.match_budget_s / 60)}m</td></tr>`).join('')}</tbody></table>`;
+  const im = cfg.images || {};
+  $('#image-limits').innerHTML = im.supported
+    ? `<div class="row" style="gap:8px">
+         <span class="badge ok">images accepted</span>
+         <span class="badge">≤ ${im.max_image_mb} MB</span>
+         <span class="badge">agent at ${esc(im.agent_dir)}/agent.py</span>
+         <span class="badge">${im.kept_per_team} image kept per team</span>
+       </div>`
+    : `<div class="note warn">This arena is running without a Docker daemon, so it cannot
+         load images — image submissions are refused here. Upload a
+         <code class="inline">.py</code> or <code class="inline">.zip</code> instead.</div>`;
+
   const libs = cfg.libraries || [];
   $('#libs').innerHTML = libs.length
     ? `<div class="row" style="gap:6px">${libs.map(l =>
         `<span class="badge ok">${esc(l)}</span>`).join('')}</div>
        <p style="color:var(--faint);font-size:12.5px;margin:12px 0 0">
          Importable from your <code class="inline">solve()</code> without shipping them.
-         Anything not listed must be in your zip.</p>`
-    : '<div class="empty">standard library only — ship everything else in your zip</div>';
+         Anything not listed must travel in your zip — or in an
+         <a href="#images">image</a>, which brings its own libraries entirely.</p>`
+    : `<div class="empty">standard library only — ship everything else in your zip, or
+         <a href="#images">submit an image</a></div>`;
 }).catch(e => toast(e.message, 'bad'));
 </script>
 </body>

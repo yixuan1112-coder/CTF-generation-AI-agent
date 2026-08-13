@@ -48,8 +48,9 @@
   <!-- ── 2. agent ──────────────────────────────────────────────────────── -->
   <div class="panel" id="agent-panel">
     <h2>2 · Agent</h2>
-    <div class="tabs">
+    <div class="tabs" id="kind-tabs">
       <button class="on" data-kind="upload">Upload code</button>
+      <button data-kind="image">Docker image</button>
       <button data-kind="remote">Remote endpoint</button>
     </div>
 
@@ -74,6 +75,66 @@
         <input type="file" id="up-file" accept=".py,.zip"/>
       </label>
       <button class="btn" id="do-upload">Submit agent</button>
+    </div>
+
+    <div id="pane-image" style="display:none">
+      <p style="color:var(--dim);font-size:13.5px;margin:0 0 14px">
+        Ship the whole environment. You pick the base image, the interpreter and the
+        libraries; the arena still supplies the hardware and the limits, so your times
+        stay comparable with everyone else's. Your image owes the arena exactly two things:
+      </p>
+      <pre class="block"><span class="c"># 1. /opt/agent/agent.py defines solve(files, meta=None)</span>
+COPY agent.py /opt/agent/agent.py
+RUN chmod -R a+rX /opt/agent   <span class="c"># the arena runs you with --user, not root</span>
+
+<span class="c"># 2. `python` is on PATH — the arena starts you with --entrypoint python</span></pre>
+      <div class="note" id="image-facts" style="margin:12px 0 16px"></div>
+      <div class="row" style="margin:12px 0 16px">
+        <a class="btn ghost small" href="/docs#images">Image contract &amp; limits</a>
+      </div>
+
+      <label class="field"><span class="lab">Agent name</span>
+        <input type="text" id="im-name" placeholder="e.g. sage-box-v2" maxlength="64"/></label>
+
+      <div class="tabs" id="src-tabs" style="margin-bottom:14px">
+        <button class="on" data-src="registry">Push to a registry</button>
+        <button data-src="tarball">Upload a tarball</button>
+      </div>
+
+      <div id="src-registry">
+        <p style="color:var(--dim);font-size:13.5px;margin:0 0 12px">
+          The normal route. Push your image anywhere public, then give the arena its
+          address — nothing large crosses this connection, and shipping a fix is one
+          <code class="inline">docker push</code> away.</p>
+        <pre class="block">docker build -t youruser/my-agent:v1 .
+docker push youruser/my-agent:v1</pre>
+        <label class="field" style="margin-top:14px"><span class="lab">Image address</span>
+          <input type="text" id="im-ref" placeholder="youruser/my-agent:v1" maxlength="300"/>
+          <span class="hint">Docker Hub needs no registry prefix. The repository must be
+            <b>public</b> — the arena pulls anonymously and stores no credentials.
+            Pinning a digest (<code class="inline">@sha256:…</code>) makes your run
+            reproducible.</span>
+        </label>
+        <button class="btn" id="do-image-ref">Pull and submit</button>
+      </div>
+
+      <div id="src-tarball" style="display:none">
+        <p style="color:var(--dim);font-size:13.5px;margin:0 0 12px">
+          For a private image, or a venue with no registry access.</p>
+        <pre class="block">docker build -t my-agent .
+docker save my-agent | gzip &gt; my-agent.tar.gz</pre>
+        <label class="field" style="margin-top:14px"><span class="lab">Image tarball</span>
+          <input type="file" id="im-file" accept=".tar,.tgz,.gz"/>
+          <span class="hint">Output of <code class="inline">docker save</code>, optionally
+            gzipped. Not <code class="inline">docker export</code> — that flattens the
+            filesystem and loses the image metadata.</span>
+        </label>
+        <button class="btn" id="do-image">Upload and submit</button>
+      </div>
+
+      <div id="im-progress" style="display:none;margin-top:12px">
+        <div class="note" id="im-progress-text"></div>
+      </div>
     </div>
 
     <div id="pane-remote" style="display:none">
@@ -174,6 +235,9 @@ function paintTeam() {
     $('#team-name-shown').textContent = team.name;
     $('#team-token').textContent = team.token;
   }
+  // Last, and never earlier: the blanket enable above would otherwise switch the
+  // image controls back on for a host that cannot accept images at all.
+  paintImageFacts();
 }
 
 $('#team-form').onsubmit = async (e) => {
@@ -204,13 +268,46 @@ function mountedNavRefresh() {
   $('.nav .who').innerHTML = team ? `team <b>${esc(team.name)}</b>` : 'not registered';
 }
 
-/* ---- tabs ---- */
-$$('.tabs button').forEach(btn => btn.onclick = () => {
-  $$('.tabs button').forEach(b => b.classList.toggle('on', b === btn));
+/* ---- tabs ----
+   Two independent groups now (submission kind, and image source), so each
+   handler must only touch the buttons in its own group. */
+$$('#kind-tabs button').forEach(btn => btn.onclick = () => {
+  $$('#kind-tabs button').forEach(b => b.classList.toggle('on', b === btn));
   const kind = btn.dataset.kind;
-  $('#pane-upload').style.display = kind === 'upload' ? '' : 'none';
-  $('#pane-remote').style.display = kind === 'remote' ? '' : 'none';
+  ['upload', 'image', 'remote'].forEach(k => {
+    $(`#pane-${k}`).style.display = k === kind ? '' : 'none';
+  });
 });
+
+$$('#src-tabs button').forEach(btn => btn.onclick = () => {
+  $$('#src-tabs button').forEach(b => b.classList.toggle('on', b === btn));
+  const src = btn.dataset.src;
+  ['registry', 'tarball'].forEach(s => {
+    $(`#src-${s}`).style.display = s === src ? '' : 'none';
+  });
+});
+
+/* Image support is a property of the HOST, not of the code: without a Docker
+   daemon there is nothing to load a team's image into. Say so up front rather
+   than letting someone upload 400 MB and then be refused. */
+function paintImageFacts() {
+  const im = (CONFIG && CONFIG.images) || {};
+  const box = $('#image-facts');
+  if (!im.supported) {
+    box.className = 'note warn';
+    box.innerHTML = `This arena has no Docker daemon, so image submissions are
+      <b>not accepted here</b>. Use <b>Upload code</b> instead.`;
+    ['#do-image', '#do-image-ref', '#im-file', '#im-ref']
+      .forEach(sel => { $(sel).disabled = true; });
+    return;
+  }
+  box.className = 'note';
+  box.innerHTML = `Up to <b>${im.max_image_mb} MB</b> per image ·
+    agent must live at <code class="inline">${esc(im.agent_dir)}/agent.py</code> ·
+    the arena keeps your <b>most recent image only</b>, so submitting a new one
+    reclaims the previous one. Either route below is loaded, then
+    <b>test-run</b> before it is accepted.`;
+}
 
 /* ---- agents ---- */
 $('#do-upload').onclick = async () => {
@@ -228,6 +325,52 @@ $('#do-upload').onclick = async () => {
   finally { btn.disabled = false; btn.textContent = 'Submit agent'; }
 };
 
+/* Both image routes end the same way, so they share everything but the call. */
+async function submitImage(btn, busyLabel, note, call) {
+  const restore = btn.textContent;
+  btn.disabled = true; btn.textContent = busyLabel;
+  $('#im-progress-text').textContent = note;
+  $('#im-progress').style.display = '';
+  try {
+    const agent = await call();
+    toast(`Image "${agent.name}" accepted and verified`, 'ok');
+    if (agent.pruned_images) toast('Your previous image was reclaimed', 'ok');
+    await loadAgents();
+    return true;
+  } catch (err) { toast(err.message, 'bad'); return false; }
+  finally {
+    btn.disabled = false; btn.textContent = restore;
+    $('#im-progress').style.display = 'none';
+  }
+}
+
+$('#do-image-ref').onclick = async () => {
+  const ref = $('#im-ref').value.trim();
+  if (!ref) return toast('Enter the image address, e.g. youruser/my-agent:v1', 'bad');
+  const name = $('#im-name').value.trim() || ref.split('/').pop().split(':')[0];
+  const ok = await submitImage($('#do-image-ref'), 'Pulling…',
+    'Pulling from the registry, then test-running your agent inside it. '
+    + 'A large image can take a few minutes.',
+    () => api('/api/agents', { method: 'POST',
+      body: { kind: 'image', name, image_ref: ref } }));
+  if (ok) $('#im-ref').value = '';
+};
+
+$('#do-image').onclick = async () => {
+  const file = $('#im-file').files[0];
+  if (!file) return toast('Choose a docker save tarball first', 'bad');
+  const cap = ((CONFIG && CONFIG.images) || {}).max_image_mb || 512;
+  if (file.size > cap * 1024 * 1024) {
+    return toast(`That image is ${Math.round(file.size / 1048576)} MB; the limit is ${cap} MB`, 'bad');
+  }
+  const name = $('#im-name').value.trim() || file.name.replace(/\.(tar|tgz|tar\.gz|gz)$/i, '');
+  const q = new URLSearchParams({ kind: 'image', name, filename: file.name });
+  const ok = await submitImage($('#do-image'), 'Uploading…',
+    'Uploading, loading and test-running your image. Keep this tab open.',
+    async () => api(`/api/agents?${q}`, { method: 'POST', raw: await file.arrayBuffer() }));
+  if (ok) $('#im-file').value = '';
+};
+
 $('#do-remote').onclick = async () => {
   const url = $('#rm-url').value.trim();
   if (!url) return toast('Enter your endpoint URL', 'bad');
@@ -240,6 +383,21 @@ $('#do-remote').onclick = async () => {
   } catch (err) { toast(err.message, 'bad'); }
 };
 
+const BADGE = { remote: 'violet', image: 'ok', upload: 'info' };
+
+function agentDetail(a) {
+  if (a.kind === 'remote') return esc(a.remote_url);
+  const mb = (a.size_bytes / 1048576).toFixed(1);
+  if (a.kind === 'image') {
+    // An image agent whose ref was reclaimed can still be selected for a match,
+    // and would fail at Gen-0. Flag it here, where it can still be fixed.
+    return a.image_ref
+      ? `${esc(a.image_ref)} · ${mb} MB`
+      : '<span style="color:var(--bad)">image reclaimed — resubmit to run a match</span>';
+  }
+  return `${esc(a.entry)} · ${(a.size_bytes / 1024).toFixed(1)} KB · ${esc((a.sha256 || '').slice(0, 12))}`;
+}
+
 async function loadAgents() {
   if (!Auth.get()) return;
   const { agents } = await api('/api/agents');
@@ -248,9 +406,9 @@ async function loadAgents() {
     <table><tbody>${agents.map(a => `
       <tr><td><b>${esc(a.name)}</b>
         <span class="agent" style="display:block;color:var(--faint);font-size:12px;font-family:var(--mono)">
-          ${a.kind === 'remote' ? esc(a.remote_url) : `${esc(a.entry)} · ${(a.size_bytes / 1024).toFixed(1)} KB · ${esc((a.sha256 || '').slice(0, 12))}`}
+          ${agentDetail(a)}
         </span></td>
-        <td style="width:90px"><span class="badge ${a.kind === 'remote' ? 'violet' : 'info'}">${esc(a.kind)}</span></td>
+        <td style="width:90px"><span class="badge ${BADGE[a.kind] || 'info'}">${esc(a.kind)}</span></td>
         <td style="width:90px;color:var(--faint);font-size:12px">${fmtAgo(a.created_at)}</td>
       </tr>`).join('')}</tbody></table>` : '';
   $('#pick-agent').innerHTML = agents.map(a =>

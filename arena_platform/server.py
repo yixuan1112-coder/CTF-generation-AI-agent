@@ -15,6 +15,7 @@ import json
 import mimetypes
 import os
 import queue
+import tempfile
 import threading
 import time
 import traceback
@@ -23,8 +24,9 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from . import agents as agents_mod
+from . import images as images_mod
 from .runner import MatchEngine, fresh_seed
-from .sandbox import available_libraries, backend_report
+from .sandbox import IMAGE_AGENT_DIR, available_libraries, backend_report
 from .store import Store, new_id
 from .tracks import all_tracks, get_track, warmup
 
@@ -77,6 +79,9 @@ class Arena:
                                   backend=backend, maker_backend=maker_backend)
         self.limit_teams = RateLimiter(limit=10, window_s=3600)
         self.limit_matches = RateLimiter(limit=30, window_s=3600)
+        # Tighter than the others on purpose: every image submission costs a
+        # multi-hundred-megabyte upload, a `docker load` and a probe container.
+        self.limit_images = RateLimiter(limit=6, window_s=3600)
 
     def _probe_maker(self) -> dict:
         """Ask the maker what it can build, and tell `tracks` so routes match."""
@@ -132,9 +137,60 @@ class Arena:
                 id=agent_id, team_id=team["id"], name=name, kind="upload",
                 entry=stored["entry"], source_dir=stored["dir"],
                 sha256=stored["sha256"], size_bytes=stored["size_bytes"], notes=notes)
+        elif kind == "image":
+            # The registry route: the team pushed it, we pull it by address.
+            if not (params.get("image_ref") or "").strip():
+                raise ApiError("give an image_ref to pull (e.g. youruser/my-agent:v1), "
+                               "or POST a `docker save` tarball as the raw body")
+            return self._accept_image(
+                team, params,
+                lambda agent_id: images_mod.pull_image(params["image_ref"], agent_id))
         else:
-            raise ApiError("kind must be 'upload' or 'remote'")
+            raise ApiError("kind must be 'upload', 'image' or 'remote'")
         return _public_agent(agent)
+
+    def submit_image_agent(self, team: dict, params: dict, tarball: Path) -> dict:
+        """The tarball route: `docker save` output arrived as the request body."""
+        return self._accept_image(
+            team, params, lambda agent_id: images_mod.load_image(tarball, agent_id))
+
+    def _accept_image(self, team: dict, params: dict, acquire) -> dict:
+        """Shared tail of both image routes: acquire → probe → record → prune.
+
+        Ordered so the host is never left holding an image no row points at:
+        mint the id first so the image can be tagged with it, probe before the
+        row exists, and remove the image on any failure.
+        """
+        name = (params.get("name") or "agent").strip()[:64] or "agent"
+        notes = (params.get("notes") or "").strip()[:500]
+        if not images_mod.images_supported():
+            raise ApiError("this arena has no Docker daemon, so it cannot accept "
+                           "image submissions — upload a .py or .zip instead", 409)
+
+        agent_id = new_id("agent")
+        acquired = acquire(agent_id)
+        try:
+            images_mod.probe_image(
+                acquired["image_ref"],
+                memory_mb=int(os.environ.get("ARENA_AGENT_MEMORY_MB", "2048")))
+        except Exception:
+            images_mod.remove_image(acquired["image_ref"])
+            raise
+
+        agent = self.store.create_agent(
+            id=agent_id, team_id=team["id"], name=name, kind="image",
+            entry="agent.py", image_ref=acquired["image_ref"],
+            sha256=(acquired.get("image_id") or "").removeprefix("sha256:"),
+            size_bytes=acquired.get("unpacked_bytes") or acquired.get("size_bytes") or 0,
+            # Provenance: which address this came from, for an operator auditing
+            # the host later. Empty for a tarball, which has no address.
+            notes=" ".join(filter(None, [notes, acquired.get("source_ref", "")]))[:500])
+
+        pruned = images_mod.prune_team_images(self.store, team["id"], agent_id)
+        out = _public_agent(agent)
+        out["pruned_images"] = len(pruned)
+        out["source_ref"] = acquired.get("source_ref", "")
+        return out
 
     def start_match(self, team: dict, agent_id: str, track_key: str) -> dict:
         agent = self.store.agent(agent_id)
@@ -168,6 +224,11 @@ def _public_agent(agent: dict) -> dict:
            ("id", "name", "kind", "entry", "sha256", "size_bytes", "notes", "created_at")}
     if agent.get("kind") == "remote":
         out["remote_url"] = agent.get("remote_url")
+    if agent.get("kind") == "image":
+        # The tag is arena-owned and derived from the agent id, so it leaks
+        # nothing — and showing it is how a team tells a live image from one the
+        # pruner has already reclaimed.
+        out["image_ref"] = agent.get("image_ref") or ""
     return out
 
 
@@ -245,6 +306,43 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(f"request body exceeds {MAX_BODY // (1024 * 1024)} MB", 413)
         return self.rfile.read(length) if length else b""
 
+    def _read_body_to_file(self, max_bytes: int, suffix: str = ".tar") -> Path:
+        """Stream a large body to disk. The caller owns (and must delete) the file.
+
+        Image tarballs are hundreds of megabytes, and this arena is sized for a
+        2-core VPS — reading one into memory the way `_read_body` does would be
+        a denial of service with a single upload. Content-Length is checked
+        first so an oversized submission is refused before the bytes arrive, and
+        the running total is checked again while reading in case the header lied.
+        """
+        length = int(self.headers.get("Content-Length") or 0)
+        if length <= 0:
+            raise ApiError("this endpoint needs a Content-Length and a raw body")
+        if length > max_bytes:
+            raise ApiError(f"upload is {length // (1024 * 1024)} MB; the limit is "
+                           f"{max_bytes // (1024 * 1024)} MB", 413)
+
+        fd, temp = tempfile.mkstemp(prefix="arena-image-", suffix=suffix)
+        path = Path(temp)
+        remaining, total = length, 0
+        try:
+            with os.fdopen(fd, "wb") as out:
+                while remaining > 0:
+                    chunk = self.rfile.read(min(1 << 20, remaining))
+                    if not chunk:
+                        raise ApiError("upload ended early — the connection dropped "
+                                       "before the whole image arrived", 400)
+                    total += len(chunk)
+                    if total > max_bytes:
+                        raise ApiError(f"upload exceeds "
+                                       f"{max_bytes // (1024 * 1024)} MB", 413)
+                    out.write(chunk)
+                    remaining -= len(chunk)
+        except BaseException:
+            path.unlink(missing_ok=True)
+            raise
+        return path
+
     def _token(self, qs: dict) -> str:
         header = self.headers.get("Authorization", "")
         if header.startswith("Bearer "):
@@ -276,6 +374,8 @@ class Handler(BaseHTTPRequestHandler):
         except ApiError as exc:
             self._json({"error": exc.message}, exc.status)
         except agents_mod.UploadError as exc:
+            self._json({"error": str(exc)}, 400)
+        except images_mod.ImageError as exc:
             self._json({"error": str(exc)}, 400)
         except BrokenPipeError:
             pass
@@ -333,7 +433,13 @@ class Handler(BaseHTTPRequestHandler):
                                "design_brain": brain_status(),
                                "maker": arena.maker_report,
                                "library_size": store.library_count(),
+                               "images": {
+                                   "supported": images_mod.images_supported(),
+                                   "agent_dir": IMAGE_AGENT_DIR,
+                                   "max_image_mb": images_mod.MAX_IMAGE_BYTES // (1024 * 1024),
+                                   "kept_per_team": 1},
                                "limits": {"max_upload_mb": agents_mod.MAX_UPLOAD_BYTES // (1024 * 1024),
+                                          "max_image_mb": images_mod.MAX_IMAGE_BYTES // (1024 * 1024),
                                           "max_active_matches": MAX_ACTIVE_MATCHES_PER_TEAM}})
 
         if path == "/api/teams" and method == "POST":
@@ -349,10 +455,22 @@ class Handler(BaseHTTPRequestHandler):
                                               for a in store.agents_for_team(team["id"])]})
             # POST: query params carry metadata, raw body carries the file.
             params = {k: v[0] for k, v in qs.items()}
+            if (params.get("kind") or "").strip() == "image":
+                # Streamed, not buffered — see _read_body_to_file.
+                arena.limit_images.check(self._client_ip())
+                tarball = self._read_body_to_file(images_mod.MAX_IMAGE_BYTES)
+                try:
+                    return self._json(arena.submit_image_agent(team, params, tarball), 201)
+                finally:
+                    tarball.unlink(missing_ok=True)
             body = self._read_body()
             if not params.get("kind") and body[:1] == b"{":
                 params.update(self._parse_json(body))
                 body = b""
+            if (params.get("kind") or "").strip() == "image":
+                # The registry route lands here (JSON body, no tarball). A pull
+                # is as expensive as a load, so it gets the same budget.
+                arena.limit_images.check(self._client_ip())
             return self._json(arena.submit_agent(team, params, body), 201)
 
         if path == "/api/matches":

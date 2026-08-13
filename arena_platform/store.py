@@ -32,11 +32,12 @@ CREATE TABLE IF NOT EXISTS agents (
     id           TEXT PRIMARY KEY,
     team_id      TEXT NOT NULL REFERENCES teams(id),
     name         TEXT NOT NULL,
-    kind         TEXT NOT NULL,              -- 'upload' | 'remote'
+    kind         TEXT NOT NULL,              -- 'upload' | 'remote' | 'image'
     entry        TEXT DEFAULT 'agent.py',
     source_dir   TEXT DEFAULT '',            -- upload: where the code was unpacked
     remote_url   TEXT DEFAULT '',            -- remote: endpoint the server calls
     remote_token TEXT DEFAULT '',
+    image_ref    TEXT DEFAULT '',            -- image: arena-owned tag on this host
     sha256       TEXT DEFAULT '',
     size_bytes   INTEGER DEFAULT 0,
     notes        TEXT DEFAULT '',
@@ -121,6 +122,22 @@ class Store:
         self._write_lock = threading.Lock()
         with self.conn() as c:
             c.executescript(SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Add columns that arrived after a live arena was already running.
+
+        CREATE TABLE IF NOT EXISTS silently keeps the OLD shape of a table that
+        already exists, so a schema edit alone does nothing to a deployed
+        database — the first query naming the new column raises OperationalError
+        instead. Every added column needs a line here.
+        """
+        c = self.conn()
+        have = {r["name"] for r in c.execute("PRAGMA table_info(agents)")}
+        for column, ddl in (("image_ref", "TEXT DEFAULT ''"),):
+            if column not in have:
+                with self._write_lock:
+                    c.execute(f"ALTER TABLE agents ADD COLUMN {column} {ddl}")
 
     def conn(self) -> sqlite3.Connection:
         c = getattr(self._local, "conn", None)
@@ -162,10 +179,10 @@ class Store:
     # ---- agents ------------------------------------------------------------
     def create_agent(self, **kw) -> dict[str, Any]:
         agent = {"id": new_id("agent"), "entry": "agent.py", "source_dir": "",
-                 "remote_url": "", "remote_token": "", "sha256": "", "size_bytes": 0,
-                 "notes": "", "created_at": time.time(), **kw}
+                 "remote_url": "", "remote_token": "", "image_ref": "", "sha256": "",
+                 "size_bytes": 0, "notes": "", "created_at": time.time(), **kw}
         cols = ("id", "team_id", "name", "kind", "entry", "source_dir", "remote_url",
-                "remote_token", "sha256", "size_bytes", "notes", "created_at")
+                "remote_token", "image_ref", "sha256", "size_bytes", "notes", "created_at")
         with self._write_lock:
             self.conn().execute(
                 f"INSERT INTO agents ({','.join(cols)}) VALUES ({','.join('?' * len(cols))})",
@@ -175,6 +192,12 @@ class Store:
     def agent(self, agent_id: str) -> dict | None:
         r = self.conn().execute("SELECT * FROM agents WHERE id = ?", (agent_id,)).fetchone()
         return dict(r) if r else None
+
+    def clear_agent_image(self, agent_id: str) -> None:
+        """The image was reclaimed from the host; the row and its history stay."""
+        with self._write_lock:
+            self.conn().execute("UPDATE agents SET image_ref = '' WHERE id = ?",
+                                (agent_id,))
 
     def agents_for_team(self, team_id: str) -> list[dict]:
         rows = self.conn().execute(

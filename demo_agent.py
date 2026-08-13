@@ -49,6 +49,16 @@ Package + run:
     python demo_agent.py --selftest          # climb the ladder locally, no server
     python demo_agent.py --serve 9000        # run as a persistent remote agent
     python demo_agent.py --enter --server URL --name "YourTeam"   # real match
+
+Or ship it as a Docker image, which is what `examples/docker_demo/` builds from
+this exact file — the arena looks for `solve` at `/opt/agent/agent.py`, so the
+whole Dockerfile contract is:
+
+    COPY demo_agent.py /opt/agent/agent.py
+    RUN chmod -R a+rX /opt/agent
+
+That route lets an agent bring its own libraries instead of borrowing the
+arena's. See `examples/docker_demo/README.md`.
 """
 from __future__ import annotations
 

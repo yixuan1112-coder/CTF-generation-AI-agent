@@ -147,8 +147,7 @@ class MatchEngine:
             "max_gen": track.max_gen, "seed": match["seed"],
             "route": track.route, "endless": track.endless,
             "skipped_segments": track.skipped_segments,
-            "isolation": backend_report() if agent_row["kind"] == "upload" else
-                         {"backend": "remote", "note": "agent runs on the team's own host"},
+            "isolation": _isolation_report(agent_row),
             "per_gen_timeout_s": track.per_gen_timeout_s,
             "match_budget_s": track.match_budget_s,
         })
@@ -295,6 +294,24 @@ class _Counter:
         with self._lock:
             self._n += 1
             return self._n
+
+
+def _isolation_report(agent_row: dict) -> dict:
+    """What the live match view tells spectators about where this agent ran.
+
+    Image agents get their own line: the confinement is the same container
+    machinery an uploaded agent gets, but the *contents* are the team's, which
+    is worth saying out loud on a public scoreboard.
+    """
+    kind = agent_row.get("kind")
+    if kind == "remote":
+        return {"backend": "remote", "strength": "n/a",
+                "note": "agent runs on the team's own host"}
+    if kind == "image":
+        return {**backend_report(), "backend": "docker",
+                "note": "the team's own image, run with --network none, dropped "
+                        "capabilities and the arena's memory/PID/CPU caps"}
+    return backend_report()
 
 
 def _summarize(outcome: str, reached: int, agent_gen: int, track: Track) -> str:

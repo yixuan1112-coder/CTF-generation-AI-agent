@@ -56,6 +56,9 @@ event log. Matches interrupted by a restart are automatically requeued.
 
 ## 2. How a team enters
 
+Three ways in, all scored the same way. Uploads and images run on the arena's hardware and
+are ranked on depth *and* speed; remote agents run on yours and are ranked on depth alone.
+
 ### Option A — upload an agent
 
 A `.py` file, or a `.zip` with `agent.py` at its top level. It must define `solve`:
@@ -83,7 +86,70 @@ cd examples/champion_agent
 zip -r ../champion.zip agent.py lattice.py     # ship your libraries alongside the agent
 ```
 
-### Option B — a remote endpoint
+### Option B — a Docker image
+
+An upload runs on *the arena's* interpreter with *the arena's* libraries. Fair, but it
+caps what a team can bring. An image lets the team choose the base, the Python version
+and every dependency, while still running on the arena's hardware under the arena's
+limits — so unlike a remote agent, **wall-clock stays comparable** and image rows are
+ranked on speed alongside uploads.
+
+The whole contract is two lines of Dockerfile:
+
+```dockerfile
+COPY agent.py /opt/agent/agent.py     # must define solve(files, meta=None)
+RUN chmod -R a+rX /opt/agent          # the arena runs you with --user, never root
+```
+
+…plus `python` on `PATH`. There are two ways to hand it over.
+
+**Route 1 — push to a registry** (the normal one). Nothing large crosses the team's
+connection to the arena, and shipping a fix is one `docker push`:
+
+```bash
+docker build -t youruser/my-agent:v1 .
+docker push  youruser/my-agent:v1
+curl -X POST "$ARENA/api/agents" -H "Authorization: Bearer $TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{"kind":"image","name":"my-agent","image_ref":"youruser/my-agent:v1"}'
+```
+
+The repository must be **public**: the arena pulls anonymously and deliberately stores no
+registry credentials. A digest-pinned reference (`@sha256:…`) makes the run reproducible.
+
+**Route 2 — upload a tarball**, for a private image or a venue with no registry access:
+
+```bash
+docker save my-agent | gzip > my-agent.tar.gz
+curl -X POST "$ARENA/api/agents?kind=image&name=my-agent" \
+     -H "Authorization: Bearer $TOKEN" --data-binary @my-agent.tar.gz
+```
+
+Either way the arena then **test-runs the image** — importing `/opt/agent/agent.py` under
+the real match confinement — before accepting it, so a broken image is rejected at
+submission with the reason rather than halfway through a match.
+
+`examples/docker_demo/` is a working image you can build, run interactively, and submit;
+`examples/docker_demo/submit.sh` does all three.
+
+**What the operator should know.** Loading a stranger's image is the most dangerous thing
+this platform does, so it is fenced on several sides — see the module docstring in
+`arena_platform/images.py` for the threat model:
+
+| Concern | What stops it |
+|---|---|
+| A tarball tagged as the arena's own runner image, silently replacing what every *other* team runs in | `manifest.json` is read and protected tags refused **before** `docker load`; the image is then retagged into `arena-team/<agent_id>` and the tarball's own tags dropped |
+| A registry reference aimed at the arena's own network (`localhost:5000/…`, an internal host) — `docker pull` runs on the arena host with the arena's routing | `validate_image_ref` resolves the registry host and refuses private, loopback and link-local addresses, the same rule remote endpoints get |
+| Image metadata used to escape (`USER`, `ENTRYPOINT`, `CMD`) | Overridden at `docker run`; `--entrypoint python` is what makes the harness, not the image's entrypoint, the thing that executes |
+| Disk exhaustion | Upload streamed to a temp file and capped (`ARENA_MAX_IMAGE_MB`, default 512); the *decompressed* image re-measured after load; one image kept per team |
+| Memory exhaustion on a small VPS | The body is never buffered in RAM — see `_read_body_to_file` |
+| A broken image wasting a match slot | `images.probe_image` runs the real import under the real flags at submission time |
+
+Set `ARENA_MAX_IMAGE_MB` to taste. On a host with no Docker daemon the arena advertises
+`images.supported: false` in `GET /api/config`, the submit page disables the tab, and the
+API refuses with a 409 — image support is a property of the host, not of the build.
+
+### Option C — a remote endpoint
 
 Keep the agent on your own machine (Sage, a GPU, a private model) and register a URL.
 The arena POSTs each challenge and reads a flag back:
