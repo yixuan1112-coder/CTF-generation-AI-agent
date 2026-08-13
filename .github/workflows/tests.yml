@@ -40,6 +40,15 @@ jobs:
           sudo apt-get install -y libfplll-dev libgmp-dev libmpfr-dev libqd-dev
           pip install cysignals fpylll
 
+      # Build the agent image so the tests exercise the Docker backend — the
+      # configuration production actually runs. Without it, docker_available()
+      # still sees a daemon (GitHub runners ship one) but every agent run hits a
+      # missing image, exit 125, and falls back to subprocess + unshare. That
+      # fallback is fine on a normal host but breaks inside the runner's
+      # restricted user namespace, which is what failed the loopback test.
+      - name: Build the agent sandbox image
+        run: docker build -t autoctf-arena-agent:latest -f Dockerfile.agent .
+
       - name: Report what the ladder will actually offer
         run: |
           python - <<'PY'
