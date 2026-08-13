@@ -17,6 +17,19 @@ Two backends, same contract:
               the socket API, which stops accidental and casual egress but is not
               a kernel-enforced boundary — see ARENA.md.
 
+Two places the agent's code can live:
+
+  * on the host — a .py/.zip the team uploaded, copied into the work dir as
+                  `agent/` and imported from there. This is the default.
+  * in the image — a team-supplied Docker image carrying its own `/opt/agent`.
+                  Nothing is copied in; `ARENA_AGENT_DIR` points the harness at
+                  the in-image path instead. Image agents are docker-only: there
+                  is no subprocess fallback, because without the container the
+                  agent's code is not present on the host at all.
+
+Either way the run flags below are applied at `docker run` time, so an image
+cannot opt out of them — a team's USER, ENTRYPOINT and CMD are all overridden.
+
 The agent never receives the flag, the solver, or the spec. It receives exactly
 what a human player would download.
 """
@@ -34,6 +47,12 @@ from pathlib import Path
 
 MAX_OUTPUT_CHARS = 8000
 DEFAULT_IMAGE = os.environ.get("ARENA_DOCKER_IMAGE", "autoctf-arena-agent:latest")
+
+# Where a team-supplied image must keep its agent. Absolute, so it cannot be
+# confused with the ./agent directory an uploaded agent is staged into, and
+# fixed, so the contract is one sentence long rather than a configuration
+# option every competitor has to get right.
+IMAGE_AGENT_DIR = "/opt/agent"
 
 
 @dataclass
@@ -186,9 +205,15 @@ try:
             sys.path.append(_site)
 
     import importlib.util
-    sys.path.insert(0, os.path.abspath("agent"))
+    # Uploaded agents are staged into ./agent inside the work dir. An agent that
+    # ships as a Docker image is never copied anywhere — its code already sits at
+    # an absolute path inside the container, and ARENA_AGENT_DIR points here.
+    agent_dir = os.path.abspath(os.environ.get("ARENA_AGENT_DIR") or "agent")
+    if not os.path.isdir(agent_dir):
+        raise FileNotFoundError(f"agent directory {agent_dir!r} does not exist")
+    sys.path.insert(0, agent_dir)
     spec = importlib.util.spec_from_file_location("team_agent_module",
-                                                  os.path.join("agent", entry))
+                                                  os.path.join(agent_dir, entry))
     if spec is None or spec.loader is None:
         raise ImportError(f"cannot load agent entry point {entry!r}")
     module = importlib.util.module_from_spec(spec)
@@ -239,12 +264,19 @@ def _clip(text: str) -> str:
     return text[:MAX_OUTPUT_CHARS] + f"\n… [{len(text) - MAX_OUTPUT_CHARS} more chars truncated]"
 
 
-def _stage(work: Path, agent_dir: Path, entry: str, challenge: dict, limits: Limits) -> None:
-    """Lay out the sandbox: agent code, player files, harness, input payload."""
-    dest = work / "agent"
-    shutil.copytree(agent_dir, dest, dirs_exist_ok=True)
-    if not (dest / entry).exists():
-        raise FileNotFoundError(f"agent entry point {entry!r} not found in submission")
+def _stage(work: Path, agent_dir: Path | None, entry: str, challenge: dict,
+           limits: Limits) -> None:
+    """Lay out the sandbox: agent code, player files, harness, input payload.
+
+    `agent_dir` is None for an image agent — its code is already inside the
+    container, so there is nothing to copy and nothing to verify here. The
+    equivalent check ran once at submission time (`images.probe_image`).
+    """
+    if agent_dir is not None:
+        dest = work / "agent"
+        shutil.copytree(agent_dir, dest, dirs_exist_ok=True)
+        if not (dest / entry).exists():
+            raise FileNotFoundError(f"agent entry point {entry!r} not found in submission")
 
     files = dict(challenge.get("files") or {})
     player = work / "challenge"
@@ -319,14 +351,20 @@ def available_libraries() -> list[str]:
     return list(_library_cache)
 
 
-def _child_env(entry: str, limits: Limits, *, netns: bool = False) -> dict[str, str]:
+def _child_env(entry: str, limits: Limits, *, netns: bool = False,
+               agent_dir_in_image: str | None = None) -> dict[str, str]:
     """A scrubbed environment — no API keys, no host paths, no repo on sys.path."""
     keep = ("PATH", "LANG", "LC_ALL", "TZ", "HOME", "TMPDIR")
     env = {k: os.environ[k] for k in keep if k in os.environ}
     env["HOME"] = env.get("TMPDIR", "/tmp")
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["ARENA_ENTRY"] = entry
-    env["ARENA_SITE"] = json.dumps(host_site_dirs())
+    if agent_dir_in_image:
+        env["ARENA_AGENT_DIR"] = agent_dir_in_image
+    # Host site-packages are the *host's* paths. They mean nothing inside a
+    # team's own image — that image brings its own interpreter and its own
+    # libraries, which is the entire point of submitting one.
+    env["ARENA_SITE"] = json.dumps([] if agent_dir_in_image else host_site_dirs())
     env["ARENA_LIMITS"] = json.dumps({
         "cpu_seconds": limits.cpu_seconds,
         "memory_mb": limits.memory_mb,
@@ -417,11 +455,21 @@ def _kill_group(proc: subprocess.Popen) -> None:
                 pass
 
 
-def _run_docker(work: Path, entry: str, limits: Limits) -> AgentRun:
-    env = _child_env(entry, limits, netns=not limits.allow_network)
-    env["ARENA_LIMITS"] = json.dumps({**json.loads(env["ARENA_LIMITS"]),
-                                      "skip_as_limit": True})
-    cmd = [
+def docker_run_argv(work: Path, env: dict[str, str], limits: Limits,
+                    image: str) -> list[str]:
+    """The confinement flags every container the arena starts is subject to.
+
+    Shared with `images.probe_image` so a team's image is validated under exactly
+    the conditions it will later compete under — a probe that ran with looser
+    flags would accept images that then fail every match.
+
+    `--entrypoint python` is what makes a team-supplied image safe to command: a
+    bare `docker run IMAGE python …` appends those words as *arguments* to
+    whatever ENTRYPOINT the image declared, so an image with its own entrypoint
+    would run that instead of the harness. Overriding it means the image's
+    ENTRYPOINT, CMD and USER are all ignored.
+    """
+    argv = [
         "docker", "run", "--rm", "-i",
         "--network", "none" if not limits.allow_network else "bridge",
         "--memory", f"{limits.memory_mb}m", "--memory-swap", f"{limits.memory_mb}m",
@@ -431,11 +479,23 @@ def _run_docker(work: Path, entry: str, limits: Limits) -> AgentRun:
         "--user", f"{os.getuid()}:{os.getgid()}",
         "-v", f"{work}:/work",
         "-w", "/work",
-        "-e", f"ARENA_ENTRY={env['ARENA_ENTRY']}",
-        "-e", f"ARENA_LIMITS={env['ARENA_LIMITS']}",
-        "-e", "PYTHONDONTWRITEBYTECODE=1", "-e", "HOME=/tmp",
-        DEFAULT_IMAGE, "python", "-E", "-B", "_harness.py",
+        "--entrypoint", "python",
     ]
+    for key in ("ARENA_ENTRY", "ARENA_LIMITS", "ARENA_AGENT_DIR"):
+        if key in env:
+            argv += ["-e", f"{key}={env[key]}"]
+    argv += ["-e", "PYTHONDONTWRITEBYTECODE=1", "-e", "HOME=/tmp"]
+    return argv + [image, "-E", "-B", "_harness.py"]
+
+
+def _run_docker(work: Path, entry: str, limits: Limits, *,
+                image: str = DEFAULT_IMAGE,
+                agent_dir_in_image: str | None = None) -> AgentRun:
+    env = _child_env(entry, limits, netns=not limits.allow_network,
+                     agent_dir_in_image=agent_dir_in_image)
+    env["ARENA_LIMITS"] = json.dumps({**json.loads(env["ARENA_LIMITS"]),
+                                      "skip_as_limit": True})
+    cmd = docker_run_argv(work, env, limits, image)
     limits_hit: list[str] = []
     started = time.monotonic()
     try:
@@ -449,11 +509,41 @@ def _run_docker(work: Path, entry: str, limits: Limits) -> AgentRun:
     return _collect(work, rc, out, err, elapsed, "docker", limits_hit)
 
 
-def run_agent(agent_dir: Path | str, entry: str, challenge: dict,
-              limits: Limits | None = None, *, backend: str = "auto") -> AgentRun:
-    """Execute one solve attempt. Never raises on agent misbehaviour."""
+def run_agent(agent_dir: Path | str | None, entry: str, challenge: dict,
+              limits: Limits | None = None, *, backend: str = "auto",
+              image: str = "", agent_dir_in_image: str = "") -> AgentRun:
+    """Execute one solve attempt. Never raises on agent misbehaviour.
+
+    Pass `image` (and `agent_dir_in_image`) to run the team's own container
+    instead of the arena's. That path is docker-only and never falls back to a
+    subprocess: the fallback would run *no agent at all*, since an image agent's
+    code exists only inside the image.
+    """
     limits = limits or Limits()
-    agent_dir = Path(agent_dir)
+    agent_dir = Path(agent_dir) if agent_dir is not None else None
+
+    if image:
+        if not docker_available():
+            return AgentRun(ok=False, backend="docker",
+                            error="this arena has no Docker daemon, so image agents "
+                                  "cannot run here")
+        work = Path(tempfile.mkdtemp(prefix="arena-run-"))
+        try:
+            _stage(work, None, entry, challenge, limits)
+            run = _run_docker(work, entry, limits, image=image,
+                              agent_dir_in_image=agent_dir_in_image or IMAGE_AGENT_DIR)
+            if run.exit_code == 125:
+                run = AgentRun(ok=False, backend="docker", exit_code=125,
+                               seconds=run.seconds, stderr=run.stderr,
+                               error="could not start your image — it may have been "
+                                     "pruned from the arena host; resubmit it")
+            return run
+        except Exception as exc:
+            return AgentRun(ok=False, error=f"sandbox setup failed: "
+                                            f"{type(exc).__name__}: {exc}")
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+
     use_docker = backend == "docker" or (backend == "auto" and docker_available())
 
     work = Path(tempfile.mkdtemp(prefix="arena-run-"))
