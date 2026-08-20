@@ -212,6 +212,16 @@ class Store:
             "SELECT entry_id FROM practice_solves WHERE team_id = ?", (team_id,))
         return [r["entry_id"] for r in rows]
 
+    def clear_practice_hints(self) -> int:
+        """Enforce the no-hints policy on practice rows, including ones seeded by
+        an older build (dedup-on-hash means re-seeding never rewrites them). Runs
+        every boot, so the rule holds no matter when a row was inserted."""
+        with self._write_lock:
+            cur = self.conn().execute(
+                "UPDATE library SET hints = '[]' "
+                "WHERE origin = 'practice' AND hints != '[]'")
+        return cur.rowcount
+
     def practice_scoreboard(self, *, limit: int = 100) -> list[dict]:
         """Per team: how many practice challenges solved, points, and when they
         last scored. Points weight harder challenges — a rung's rank plus one, so

@@ -108,4 +108,7 @@ def seed_practice(store) -> int:
         if store.archive_challenge(spec=spec, track=spec.category,
                                    team_name="", origin="practice"):
             inserted += 1
+    # Enforce the no-hints policy even on rows an older build already seeded with
+    # hints — archive_challenge de-dupes on the flag hash and never rewrites them.
+    store.clear_practice_hints()
     return inserted
