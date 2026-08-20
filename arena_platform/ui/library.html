@@ -3,30 +3,29 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>AutoCTF Arena — Challenge Library</title>
+<title>AutoCTF Arena — Challenges</title>
 <link rel="stylesheet" href="/static/arena.css"/>
 </head>
 <body>
 <div class="wrap">
   <div class="hero">
-    <div class="eyebrow">Authored during real matches</div>
-    <h1>Challenges the maker invented</h1>
-    <p class="lead">
-      Every challenge here exists because a team's agent cleared every bounded rung and
-      pushed the maker into authoring mode. It chained verified attack classes into
-      something no ladder contains, proved the result solvable, and deployed it. These are
-      the survivors — kept after the match that produced them ended.
+    <div class="eyebrow" id="mode-eyebrow">Solve them yourself</div>
+    <h1 id="mode-title">Challenges</h1>
+    <p class="lead" id="mode-lead">
+      Pick a challenge, download its files, and solve it however you like — by hand or with
+      your own tools — then paste the flag to check it. No account, no agent upload required.
     </p>
     <div class="row">
-      <a class="btn" href="/submit">Enter your agent →</a>
-      <a class="btn ghost" href="/">Leaderboard</a>
-      <a class="btn ghost" href="/docs">Rules &amp; API</a>
+      <button class="btn" id="tab-practice" onclick="setMode('practice')">Practice set</button>
+      <button class="btn ghost" id="tab-match" onclick="setMode('match')">From live matches</button>
+      <span class="spacer" style="flex:1"></span>
+      <a class="btn ghost" href="/submit">Enter an agent →</a>
     </div>
   </div>
 
   <div class="panel" style="margin-top:24px">
     <div class="row" style="margin-bottom:14px">
-      <select id="source" style="max-width:260px">
+      <select id="source" style="max-width:260px;display:none">
         <option value="">All designers</option>
         <option value="llm">Designed by a model</option>
         <option value="catalog">Enumerated from the catalogue</option>
@@ -39,64 +38,99 @@
   </div>
 </div>
 
+<script src="/static/arena.js"></script>
 <script>
-const $ = (id) => document.getElementById(id);
-const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g,
-  (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+let MODE = new URLSearchParams(location.search).get("mode") === "match" ? "match" : "practice";
+
+const DIFFICULTY = (rank) =>
+  rank <= 2 ? ["easy", ""] : rank <= 6 ? ["medium", "amber"] : ["hard", "violet"];
 
 async function loadConfig() {
   try {
     const cfg = await (await fetch("/api/config")).json();
     const brain = cfg.design_brain || {};
-    $("brain-badge").textContent = brain.configured
-      ? `design brain: ${brain.model}` : "design brain: OFFLINE (catalogue only)";
-    $("brain-badge").className = "badge " + (brain.configured ? "violet" : "");
+    $("#brain-badge").textContent = brain.configured
+      ? `design brain: ${brain.model}` : "";
+    $("#brain-badge").className = "badge " + (brain.configured ? "violet" : "");
   } catch (e) { /* the badge is decoration; the list is the page */ }
 }
 
+function setMode(mode) {
+  MODE = mode;
+  history.replaceState(null, "", mode === "match" ? "?mode=match" : location.pathname);
+  $("#tab-practice").className = "btn" + (mode === "practice" ? "" : " ghost");
+  $("#tab-match").className = "btn" + (mode === "match" ? "" : " ghost");
+  $("#source").style.display = mode === "match" ? "" : "none";
+  if (mode === "practice") {
+    $("#mode-eyebrow").textContent = "Solve them yourself";
+    $("#mode-title").textContent = "Practice challenges";
+    $("#mode-lead").textContent =
+      "A fixed set that stays put — every rung of the crypto ladder plus a few composed " +
+      "challenges. Download the files, solve it by hand or point your own AI agent at it, " +
+      "then paste the flag to check it. Same challenge for everyone.";
+  } else {
+    $("#mode-eyebrow").textContent = "Authored during real matches";
+    $("#mode-title").textContent = "Challenges the maker invented";
+    $("#mode-lead").textContent =
+      "These exist because a team's agent cleared every bounded rung and pushed the maker " +
+      "into authoring mode. It chained verified attacks into something no ladder contains, " +
+      "proved it solvable, and deployed it. The survivors are kept here after the match ends.";
+  }
+  load();
+}
+
 async function load() {
-  const source = $("source").value;
-  const url = "/api/library?limit=100" + (source ? `&source=${source}` : "");
+  const source = MODE === "match" ? $("#source").value : "";
+  const url = `/api/library?limit=100&origin=${MODE}` + (source ? `&source=${source}` : "");
   let data;
   try {
     data = await (await fetch(url)).json();
   } catch (e) {
-    $("list").innerHTML = `<div class="empty">could not reach the arena: ${esc(e.message)}</div>`;
+    $("#list").innerHTML = `<div class="empty">could not reach the arena: ${esc(e.message)}</div>`;
     return;
   }
-  $("count-badge").textContent = `${data.total} authored`;
+  const n = MODE === "practice" ? data.practice_total : data.match_total;
+  $("#count-badge").textContent = MODE === "practice"
+    ? `${n} practice challenge(s)` : `${n} authored`;
   const entries = data.entries || [];
   if (!entries.length) {
-    $("list").innerHTML = `<div class="empty">
-      Nothing yet. The maker only authors once an agent has cleared every bounded rung —
-      until some agent gets that far, this shelf stays empty.</div>`;
+    $("#list").innerHTML = MODE === "practice"
+      ? `<div class="empty">The practice catalogue is still warming up — check back in a moment.</div>`
+      : `<div class="empty">Nothing yet. The maker only authors once an agent has cleared every
+         bounded rung — until some agent gets that far, this shelf stays empty.</div>`;
     return;
   }
-  $("list").innerHTML = entries.map(render).join("");
+  $("#list").innerHTML = entries.map(render).join("");
 }
 
 function render(e) {
+  const [diffLabel, diffClass] = DIFFICULTY(e.rank);
   const stages = (e.stages || []).length
     ? e.stages.map((s) => `<span class="badge">${esc(s)}</span>`).join(" → ")
     : `<span class="badge">${esc(e.attack_class)}</span>`;
   const hints = (e.hints || []).map((h) => `<li>${esc(h)}</li>`).join("");
   const files = (e.file_list || []).map(
     (f) => `<li><code>${esc(f.name)}</code> <span class="sub">${f.bytes} B</span></li>`).join("");
-  const designer = e.plan_source === "llm"
-    ? `<span class="badge violet">designed by a model</span>`
-    : `<span class="badge">catalogue</span>`;
-  const beaten = e.solved_in_match
-    ? `<span class="badge">solved in its match</span>`
-    : `<span class="badge amber">never solved</span>`;
+  const meta = MODE === "practice"
+    ? `<span class="badge ${diffClass}">${diffLabel}</span>
+       <span class="badge">${esc(e.track)}</span>
+       ${e.depth > 1 ? `<span class="badge">depth ${e.depth}</span>` : ""}`
+    : `${e.plan_source === "llm"
+          ? `<span class="badge violet">designed by a model</span>`
+          : `<span class="badge">catalogue</span>`}
+       ${e.solved_in_match
+          ? `<span class="badge">solved in its match</span>`
+          : `<span class="badge amber">never solved</span>`}
+       <span class="badge">depth ${e.depth}</span>
+       <span class="badge">rank ${e.rank}</span>`;
+  const footer = MODE === "practice"
+    ? `<p class="sub" style="margin:10px 0 0">Solved ${e.solve_count} time(s) here.</p>`
+    : `<p class="sub" style="margin:10px 0 0">Authored against
+        ${esc(e.team_name || "a team")} · solved ${e.solve_count} time(s) here</p>`;
   return `
   <div class="panel" style="margin:0 0 14px">
     <h2 style="margin-bottom:6px">${esc(e.title)}</h2>
-    <div class="row" style="gap:8px;margin-bottom:10px">
-      ${designer} ${beaten}
-      <span class="badge">depth ${e.depth}</span>
-      <span class="badge">rank ${e.rank}</span>
-      <span class="badge">Gen-${e.generation}</span>
-    </div>
+    <div class="row" style="gap:8px;margin-bottom:10px">${meta}</div>
     <p style="color:var(--dim);margin:0 0 12px">${esc(e.story)}</p>
     <div style="margin-bottom:12px">${stages}</div>
     ${e.designer_note ? `<p class="sub" style="margin:0 0 12px">${esc(e.designer_note)}</p>` : ""}
@@ -116,15 +150,13 @@ function render(e) {
       <button class="btn" onclick="submitFlag('${esc(e.id)}')">Submit</button>
       <span id="verdict-${esc(e.id)}" class="sub"></span>
     </div>
-    <p class="sub" style="margin:10px 0 0">
-      Authored against ${esc(e.team_name || "a team")} · solved ${e.solve_count} time(s) here
-    </p>
+    ${footer}
   </div>`;
 }
 
 async function submitFlag(id) {
-  const verdict = $(`verdict-${id}`);
-  const flag = ($(`flag-${id}`).value || "").trim();
+  const verdict = document.getElementById(`verdict-${id}`);
+  const flag = (document.getElementById(`flag-${id}`).value || "").trim();
   if (!flag) { verdict.textContent = "enter a flag first"; return; }
   verdict.textContent = "checking…";
   try {
@@ -141,9 +173,10 @@ async function submitFlag(id) {
   }
 }
 
-$("source").addEventListener("change", load);
+mountNav('/practice');
+$("#source").addEventListener("change", load);
 loadConfig();
-load();
+setMode(MODE);
 </script>
 </body>
 </html>

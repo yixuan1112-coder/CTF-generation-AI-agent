@@ -108,7 +108,7 @@ function mountNav(active) {
     <nav class="nav">
       <a class="brand" href="/"><span class="mark">◆</span><b>AutoCTF Arena</b></a>
       <div class="links">
-        ${link('/', 'Leaderboard')}${link('/submit', 'Enter your agent')}${link('/docs', 'Rules &amp; API')}
+        ${link('/', 'Leaderboard')}${link('/practice', 'Practice')}${link('/submit', 'Enter your agent')}${link('/docs', 'Rules &amp; API')}
       </div>
       <div class="spacer"></div>
       <div class="who">${team ? `team <b>${esc(team.name)}</b>` : 'not registered'}</div>

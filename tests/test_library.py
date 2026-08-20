@@ -142,7 +142,12 @@ class LibraryApiTests(unittest.TestCase):
     def test_the_library_page_is_served(self):
         with urllib.request.urlopen(self.base + "/library", timeout=10) as resp:
             self.assertEqual(resp.status, 200)
-            self.assertIn(b"Challenge Library", resp.read())
+            self.assertIn(b"AutoCTF Arena \xe2\x80\x94 Challenges", resp.read())
+
+    def test_the_practice_alias_serves_the_same_page(self):
+        with urllib.request.urlopen(self.base + "/practice", timeout=10) as resp:
+            self.assertEqual(resp.status, 200)
+            self.assertIn(b"Practice set", resp.read())
 
     def test_config_reports_the_design_brain_and_shelf_size(self):
         cfg = self.get("/api/config")
@@ -198,6 +203,39 @@ class LibraryApiTests(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as ctx:
             self.get("/api/library/lib_doesnotexist")
         self.assertEqual(ctx.exception.code, 404)
+
+    # ---- practice catalogue ------------------------------------------------
+    def test_practice_catalogue_is_seeded_and_ordered(self):
+        data = self.get("/api/library?origin=practice&limit=100")
+        entries = data["entries"]
+        # at least the whole crypto ladder is present, easiest first
+        self.assertGreaterEqual(data["practice_total"], len(CRYPTO_LADDER))
+        ranks = [e["rank"] for e in entries]
+        self.assertEqual(ranks, sorted(ranks), "practice must read easiest-first")
+        classes = {e["attack_class"] for e in entries}
+        self.assertIn("smalle", classes)
+
+    def test_a_practice_flag_checks_out(self):
+        """The seeded flag is checkable, and never present in the served files."""
+        from autoctf_gan.crypto_ladder import gen_crypto_ladder
+        from arena_platform.practice import PRACTICE_SEED
+
+        secret = self.arena.store.practice_secret()
+        spec = gen_crypto_ladder(seed=PRACTICE_SEED, generation=0, flag_secret=secret)
+        entries = self.get("/api/library?origin=practice&limit=100")["entries"]
+        match = next(e for e in entries if e["title"] == spec.title)
+        stored = self.get(f"/api/library/{match['id']}")
+        self.assertNotIn("flag_sha256", json.dumps(stored))
+        self.assertFalse(self.post(f"/api/library/{match['id']}/submit",
+                                   {"flag": "flag{nope}"})["correct"])
+        self.assertTrue(self.post(f"/api/library/{match['id']}/submit",
+                                  {"flag": spec.flag})["correct"])
+
+    def test_origin_is_allow_listed(self):
+        hostile = urllib.parse.quote("' OR 1=1 --")
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            self.get(f"/api/library?origin={hostile}")
+        self.assertEqual(ctx.exception.code, 400)
 
 
 if __name__ == "__main__":

@@ -77,6 +77,7 @@ class Arena:
         self.maker_report = self._probe_maker()
         self.engine = MatchEngine(self.store, self.upload_root, workers=workers,
                                   backend=backend, maker_backend=maker_backend)
+        self._seed_practice()
         self.limit_teams = RateLimiter(limit=10, window_s=3600)
         self.limit_matches = RateLimiter(limit=30, window_s=3600)
         # Tighter than the others on purpose: every image submission costs a
@@ -97,6 +98,20 @@ class Arena:
             # at startup, rather than at the first evolution of the first match.
             raise RuntimeError(f"challenge-maker unavailable: {exc}") from exc
         return report
+
+    def _seed_practice(self) -> None:
+        """Populate the curated practice catalogue once, so a player always has
+        something to pick. A build failure here must never stop the arena from
+        serving matches, so it is best-effort and merely logged."""
+        try:
+            from .practice import seed_practice
+            added = seed_practice(self.store)
+            if added:
+                print(f"[arena] seeded {added} practice challenge(s)")
+        except Exception as exc:                      # noqa: BLE001 — never fatal
+            import traceback
+            traceback.print_exc()
+            print(f"[arena] practice seeding skipped: {type(exc).__name__}: {exc}")
 
     def start(self) -> None:
         self.engine.start()
@@ -385,7 +400,7 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- pages -------------------------------------------------------------
     PAGES = {"/": "index.html", "/submit": "submit.html", "/docs": "docs.html",
-             "/library": "library.html"}
+             "/library": "library.html", "/practice": "library.html"}
 
     def _serve_page(self, path: str) -> bool:
         if path in self.PAGES:
@@ -432,7 +447,7 @@ class Handler(BaseHTTPRequestHandler):
                                "libraries": available_libraries(),
                                "design_brain": brain_status(),
                                "maker": arena.maker_report,
-                               "library_size": store.library_count(),
+                               "library_size": store.library_count(origin="match"),
                                "images": {
                                    "supported": images_mod.images_supported(),
                                    "agent_dir": IMAGE_AGENT_DIR,
@@ -512,9 +527,14 @@ class Handler(BaseHTTPRequestHandler):
             source = qs.get("source", [""])[0]
             if source not in ("", "catalog", "llm"):
                 raise ApiError("source must be 'catalog' or 'llm'")
+            origin = qs.get("origin", [""])[0]
+            if origin not in ("", "practice", "match"):
+                raise ApiError("origin must be 'practice' or 'match'")
             return self._json({"total": store.library_count(),
+                               "practice_total": store.library_count(origin="practice"),
+                               "match_total": store.library_count(origin="match"),
                                "entries": store.library(limit=limit, offset=offset,
-                                                        plan_source=source)})
+                                                        plan_source=source, origin=origin)})
 
         if path.startswith("/api/library/"):
             rest = path[len("/api/library/"):]

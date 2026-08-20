@@ -99,7 +99,8 @@ CREATE TABLE IF NOT EXISTS library (
     files         TEXT NOT NULL,              -- json: player artifacts, name -> content
     flag_sha256   TEXT NOT NULL,              -- 64-bit flag; the answer is not stored
     solved_in_match INTEGER DEFAULT 0,
-    solve_count   INTEGER DEFAULT 0
+    solve_count   INTEGER DEFAULT 0,
+    origin        TEXT DEFAULT 'match'        -- 'match' (authored live) | 'practice' (curated)
 );
 
 CREATE INDEX IF NOT EXISTS idx_events_match ON match_events(match_id, seq);
@@ -138,6 +139,11 @@ class Store:
             if column not in have:
                 with self._write_lock:
                     c.execute(f"ALTER TABLE agents ADD COLUMN {column} {ddl}")
+        lib = {r["name"] for r in c.execute("PRAGMA table_info(library)")}
+        for column, ddl in (("origin", "TEXT DEFAULT 'match'"),):
+            if column not in lib:
+                with self._write_lock:
+                    c.execute(f"ALTER TABLE library ADD COLUMN {column} {ddl}")
 
     def conn(self) -> sqlite3.Connection:
         c = getattr(self._local, "conn", None)
@@ -149,6 +155,35 @@ class Store:
             c.execute("PRAGMA busy_timeout=30000")
             self._local.conn = c
         return c
+
+    # ---- practice ----------------------------------------------------------
+    def practice_secret(self) -> str:
+        """A per-server secret that seasons every practice flag.
+
+        Persisted beside the database (inside the backed-up data dir) and created
+        once. It is what lets the practice SEED be a public constant while the
+        flags stay underivable from this public repo — a fresh server gets fresh
+        practice flags, and they survive restarts. `ARENA_PRACTICE_SECRET`
+        overrides it when an operator wants to pin the value explicitly.
+        """
+        import os
+        override = os.environ.get("ARENA_PRACTICE_SECRET")
+        if override:
+            return override
+        secret_file = self.path.with_name("practice_secret")
+        try:
+            existing = secret_file.read_text(encoding="utf-8").strip()
+            if existing:
+                return existing
+        except FileNotFoundError:
+            pass
+        value = secrets.token_hex(16)
+        secret_file.write_text(value, encoding="utf-8")
+        try:
+            secret_file.chmod(0o600)
+        except OSError:
+            pass
+        return value
 
     # ---- teams -------------------------------------------------------------
     def create_team(self, name: str, contact: str = "") -> dict[str, Any]:
@@ -316,7 +351,8 @@ class Store:
 
     # ---- challenge library -------------------------------------------------
     def archive_challenge(self, *, spec, match_id: str = "", team_name: str = "",
-                          track: str = "", solved: bool = False) -> dict | None:
+                          track: str = "", solved: bool = False,
+                          origin: str = "match") -> dict | None:
         """Keep an authored challenge after the match that produced it ends.
 
         Takes the organizer-side spec but stores only what a player may see: the
@@ -342,6 +378,7 @@ class Store:
             "files": json.dumps(dict(spec.artifacts or {}), ensure_ascii=False),
             "flag_sha256": spec.official_solver.expected_flag_sha256,
             "solved_in_match": 1 if solved else 0, "solve_count": 0,
+            "origin": origin,
         }
         if not entry["flag_sha256"]:
             return None
@@ -354,17 +391,28 @@ class Store:
         return entry if cur.rowcount else None
 
     def library(self, *, limit: int = 60, offset: int = 0,
-                plan_source: str = "") -> list[dict]:
+                plan_source: str = "", origin: str = "") -> list[dict]:
         q = "SELECT * FROM library"
-        args: tuple = ()
+        where, args = [], []
         if plan_source:
-            q += " WHERE plan_source = ?"
-            args = (plan_source,)
-        q += " ORDER BY rank DESC, created_at DESC LIMIT ? OFFSET ?"
-        rows = self.conn().execute(q, args + (max(1, min(limit, 200)), max(0, offset)))
+            where.append("plan_source = ?"); args.append(plan_source)
+        if origin:
+            where.append("origin = ?"); args.append(origin)
+        if where:
+            q += " WHERE " + " AND ".join(where)
+        # Practice is a curriculum, so it reads easiest-first; the match feed is a
+        # highlight reel, so it leads with the hardest thing anyone reached.
+        q += (" ORDER BY rank ASC, created_at ASC" if origin == "practice"
+              else " ORDER BY rank DESC, created_at DESC")
+        q += " LIMIT ? OFFSET ?"
+        rows = self.conn().execute(q, tuple(args) + (max(1, min(limit, 200)), max(0, offset)))
         return [_library_row(dict(r)) for r in rows]
 
-    def library_count(self) -> int:
+    def library_count(self, *, origin: str = "") -> int:
+        if origin:
+            return self.conn().execute(
+                "SELECT COUNT(*) AS n FROM library WHERE origin = ?", (origin,)
+            ).fetchone()["n"]
         return self.conn().execute("SELECT COUNT(*) AS n FROM library").fetchone()["n"]
 
     def library_entry(self, entry_id: str, *, with_files: bool = False) -> dict | None:
