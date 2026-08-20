@@ -172,5 +172,24 @@ class HardcoreChallenges(unittest.TestCase):
         self.assertTrue(verify_spec(spec).valid)
 
 
+class VarietyCategories(unittest.TestCase):
+    """A spread across misc/crypto/web/forensics/reverse, each solvable & leak-free."""
+
+    def test_every_variety_challenge_solves_and_hides_the_flag(self):
+        from autoctf_gan.variety import ALL_VARIETY
+        from autoctf_gan.verify import verify_spec
+        seen = set()
+        for builder in ALL_VARIETY:
+            spec = builder(seed=1234, generation=0, flag_secret="vsec")
+            seen.add(spec.category)
+            self.assertEqual(spec.hints, [])
+            for content in spec.artifacts.values():
+                self.assertNotIn(spec.flag, content)   # never the literal flag
+            self.assertTrue(verify_spec(spec).valid,
+                            f"{spec.category}/{spec.challenge_type} did not solve")
+        # genuinely multiple categories, not just relabelled crypto
+        self.assertTrue({"misc", "web", "forensics", "reverse"} <= seen)
+
+
 if __name__ == "__main__":
     unittest.main()
