@@ -1,10 +1,21 @@
 #!/usr/bin/env python3
-"""Champion agent — clears the whole crypto ladder, Boneh-Durfee included.
+"""Champion agent — clears the RSA ladder through Boneh-Durfee (Gen-0..6).
 
 This is the worked answer to the starter agent's limitation. The starter has no
 lattice attack, so the challenge-maker out-evolves it at Gen-6. This one ships
 `lattice.py` alongside it in the zip and adds a Boneh-Durfee stage, which takes
-it to the top of the ladder.
+it to the last RSA rung.
+
+It deliberately STOPS there. Gen-7 and up (singular, gcmreuse, noncebias) are the
+detection rungs: each hands over a correct-looking implementation and ordinary
+data, and the whole challenge is noticing what is wrong — a zero discriminant, a
+thrice-used GCM nonce, a 16-bit nonce bias. An agent like this one, which
+dispatches on the *shape* of the artifacts (`n.txt`+`e.txt` -> try Wiener,
+`e == 3` -> try cube root), has nothing to match on there: the files look like a
+well-formed curve, a clean archive, a valid ledger. Beating those rungs needs an
+agent that computes an invariant and reacts to it, not one with a bigger table of
+named attacks. That gap is the point of the upper ladder — leaving this agent
+unable to climb it is the demonstration, not a bug to fix.
 
 Package it the way the arena expects:
 

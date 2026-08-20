@@ -4,7 +4,7 @@ A `Competition` used to hold ONE category for its lifetime, so the maker's entir
 repertoire was a single ladder and the match ended when that ladder ran out. A
 campaign replaces that with an ordered route the maker walks:
 
-    crypto ladder (7 rungs)  ->  reverse ladder (6 rungs)  ->  composed crypto (no end)
+    crypto ladder (10 rungs) ->  reverse ladder (6 rungs)  ->  composed crypto (no end)
 
 Escalation is a global generation counter; the campaign maps it onto a segment
 and a local rung. So "evolve" now means three different moves depending on where

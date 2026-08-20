@@ -63,7 +63,12 @@ def _keypair(rng, bits, e):
 def _spec(*, seed, generation, rank, challenge_type, story, vuln, solution,
           hints, artifacts, solver_src, flag, archetype_id, parent_spec_id,
           mutation_ops, attack_class, target_solve_rate, flag_secret="",
-          extra_solver_files=None):
+          extra_solver_files=None, family="RSA", title_override=None,
+          max_runtime_s=90):
+    # `family` and `title_override` exist because the ladder outgrew RSA: the
+    # rungs in hard_ladder are a singular cubic, a GCM archive and an ECDSA
+    # ledger, and titling those "RSA Singular" would mislabel the challenge in
+    # every place the arena shows a rung name.
     expected = hashlib.sha256(flag.encode()).hexdigest()
     # The id is a one-way digest: it used to be f"crypto-{cls}-{seed:06d}-g{gen}"
     # plus sha256(flag)[:8], which printed the seed the flag derives from — and
@@ -72,7 +77,8 @@ def _spec(*, seed, generation, rank, challenge_type, story, vuln, solution,
                        generation=generation, secret=flag_secret)
     solver_files = {"solver.py": solver_src, **(extra_solver_files or {})}
     return ChallengeSpec(
-        slug=slug, title=f"RSA {attack_class.title()} (Gen-{generation})",
+        slug=slug,
+        title=f"{title_override or f'{family} {attack_class.title()}'} (Gen-{generation})",
         category="crypto", challenge_type=challenge_type, difficulty="hard",
         story=story, vulnerability=vuln, intended_solution=solution, hints=hints,
         delivery="crypto", seed=seed,
@@ -86,7 +92,8 @@ def _spec(*, seed, generation, rank, challenge_type, story, vuln, solution,
                               params={}, guard="crypto") for i in range(rank + 1)],
         artifacts=artifacts,
         official_solver=OfficialSolver(entry="solver.py", files=solver_files,
-                                       expected_flag_sha256=expected, max_runtime_s=90),
+                                       expected_flag_sha256=expected,
+                                       max_runtime_s=max_runtime_s),
         target_solve_rate=target_solve_rate,
     )
 
@@ -408,6 +415,22 @@ LADDER_NAMES = ["smalle", "hastad", "commonmod", "wiener", "fermat", "pollard"]
 if _fpylll_available():
     CRYPTO_LADDER.append(gen_boneh_durfee)
     LADDER_NAMES.append("bonehdurfee")
+
+# Rungs 7+ come from hard_ladder, where difficulty stops being "which attack" and
+# becomes "which weakness". They are appended rather than defined here because
+# none of them is RSA and none of them fits this file's `_keypair`/`_TAIL`
+# scaffolding: a singular cubic, a GCM archive and an ECDSA ledger.
+#
+# The import is placed after `_spec` so hard_ladder's deferred `_rung_spec` call
+# always resolves, and after the fpylll block so the lattice-backed rungs land at
+# the top of the ladder in either configuration.
+from .hard_ladder import HARD_LADDER, HARD_LADDER_NAMES, LATTICE_RUNGS  # noqa: E402
+
+for _builder, _name in zip(HARD_LADDER, HARD_LADDER_NAMES):
+    if _name in LATTICE_RUNGS and not _fpylll_available():
+        continue                      # a PoC that cannot run is never shipped (P1)
+    CRYPTO_LADDER.append(_builder)
+    LADDER_NAMES.append(_name)
 
 
 def gen_crypto_ladder(*, seed: int, generation: int = 0,

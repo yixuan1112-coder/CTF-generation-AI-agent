@@ -23,8 +23,13 @@ The composed solver is assembled from the same `solve_*` functions that built
 the stages, and `verify_spec` runs it for real before anything is deployed. A
 composition that cannot be solved is rejected exactly like a bad mutation.
 
-The space is unbounded: with 6 attack classes there are 30 orderings at depth 2,
-150 at depth 3, and it keeps going, so the maker always has a next move.
+The space is unbounded: with 8 attack classes there are 56 orderings at depth 2,
+392 at depth 3, and it keeps going, so the maker always has a next move.
+
+Past depth 3 the per-stage hints are withheld — see `describe`. Naming every
+weakness turned the deepest challenges in the repertoire into pure execution: an
+agent that is told "stage 3 is Pollard p-1" never has to diagnose anything, and
+diagnosis is the part strong agents differ on.
 """
 from __future__ import annotations
 
@@ -93,7 +98,7 @@ def _rank_of(combo: tuple[str, ...]) -> int:
 
 
 _CATALOG: list[tuple[str, ...]] | None = None
-CATALOG_MAX_DEPTH = 5          # 4680 compositions; past this we extend instead of enumerate
+CATALOG_MAX_DEPTH = 5          # 22400 compositions; past this we extend instead of enumerate
 
 
 def ordered_catalog() -> list[tuple[str, ...]]:
@@ -161,17 +166,28 @@ def plan_for(*, generation: int, ladder_len: int) -> Plan:
     return plan_at(generation - ladder_len)
 
 
+# Compositions at or past this depth ship no per-stage diagnosis. The structural
+# hint stays either way: how many layers there are is a fact about the archive an
+# agent could count for itself, not a free answer.
+HINT_DEPTH_LIMIT = 4
+
+
 def describe(stages: list[str]) -> Plan:
     """Give an enumerated composition its player-facing prose."""
     labels = [STAGES[s].label for s in stages]
+    layers = [f"There are {len(stages)} sealed layers; each one hands you the next key."]
+    guided = [f"Stage {i + 1}: {STAGES[s].hint}" for i, s in enumerate(stages)]
     return Plan(
         stages=stages,
-        title=f"Chained RSA — {' then '.join(labels)}",
+        # The title names the classes for shallow chains and stops doing so for
+        # deep ones, for the same reason the hints do: it is shown to the agent.
+        title=(f"Chained RSA — {' then '.join(labels)}"
+               if len(stages) < HINT_DEPTH_LIMIT
+               else f"Chained RSA — {len(stages)} sealed layers"),
         story=("A key-escrow archive was rebuilt in layers: each layer's unlock key "
                "is the plaintext of the layer before it. Only the outermost key set "
                "is readable. Recover the innermost message."),
-        hints=[f"Stage {i + 1}: {STAGES[s].hint}" for i, s in enumerate(stages)]
-              + [f"There are {len(stages)} sealed layers; each one hands you the next key."],
+        hints=(guided + layers) if len(stages) < HINT_DEPTH_LIMIT else layers,
         designer_note=(f"Composition of {len(stages)} verified attack classes "
                        f"({' -> '.join(stages)}); depth is structural, key sizes are unchanged."),
         source="catalog",

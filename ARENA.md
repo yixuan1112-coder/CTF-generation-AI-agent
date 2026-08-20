@@ -216,12 +216,40 @@ A team's leaderboard row is its **best** completed match, so reruns can only imp
 
 | Track | Playable | Rungs | How it escalates |
 |---|---|---|---|
-| `crypto` | ✅ | smalle → hastad → commonmod → wiener → fermat → pollard → bonehdurfee | rotates to a harder attack *class* each rung |
+| `crypto` | ✅ | smalle → hastad → commonmod → wiener → fermat → pollard → bonehdurfee → **singular → gcmreuse → noncebias** | early rungs rotate attack *class*; the top three are hard to *find*, not just exploit |
 | `reverse` | ⚠️ | R=1 → R=6 | one more key-schedule round each rung |
-| `web` | ❌ | bypass-flag → … → bypass-popitem | each rung bans the token the previous bypass used |
+| `web` | ❌ | bypass-flag → … → bypass-popitem → **bypass-keys → bypass-get → bypass-tojson → bypass-pprint → bypass-pop** | each rung bans the token the previous bypass used; the last five force non-obvious Jinja constructs |
 
 **`crypto` is the track that discriminates.** Each rung needs a genuinely different
 attack, and the last one needs a lattice.
+
+The top three rungs move the difficulty from *exploitation* to *detection* —
+where a strong agent actually differs from a weak one. Each hands over a complete,
+correct-looking implementation and ordinary-looking data, and says nothing about
+what is wrong:
+
+- **`singular`** — a vendor's in-house 256-bit "elliptic curve" whose parameters
+  are all well-formed and whose shipped point arithmetic is correct. The
+  discriminant `4a³ + 27b²` is zero, so it is a singular cubic: its group is
+  `F_p*` in disguise and `p−1` is smooth, collapsing a 256-bit discrete log to a
+  Pohlig-Hellman that finishes in milliseconds. You have to *compute* the
+  discriminant to know.
+- **`gcmreuse`** — 128 AES-GCM records with correct tags and no key material. One
+  nonce is used three times (scattered, not adjacent), which turns the tags into
+  polynomials sharing an unknown and leaks the GHASH subkey to a gcd. Finding it
+  means noticing three collisions among 128 twelve-byte nonces.
+- **`noncebias`** — an ECDSA ledger on secp256k1 where every signature verifies
+  against the published key and the curve and hash are exactly as stated. The
+  nonces are 16 bits short — invisible, because a signature never reveals its
+  nonce — so you have to *hypothesise* the bias and confirm it with a lattice
+  (hidden number problem). This rung needs fpylll and is dropped where it is
+  absent, the same bargain Boneh-Durfee already makes.
+
+Two matching **compose** stages join the authoring catalogue —
+`franklin` (Franklin-Reiter related messages) and `crtfault` (a Bellcore CRT
+fault hidden in a batch of signed receipts) — so the endless tail can also demand
+diagnosis, not just execution. Past depth 3 the composed challenges withhold their
+per-stage hints for the same reason.
 
 **`reverse` is playable but weak.** Rounds only change how the password reaches the
 keystream state; an agent that solves for the state directly (see

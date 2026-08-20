@@ -396,6 +396,113 @@ def solve_pollard(prefix: str = "", bound: int = 4000) -> bytes:
 
 
 # ---------------------------------------------------------------------------
+# rank 6 — the same message sent twice with a known offset (Franklin-Reiter)
+# ---------------------------------------------------------------------------
+# The first stage whose weakness is not visible in the key. n is a normal 1024-bit
+# modulus, the exponent is small but the message is far larger than the cube root
+# of n, so the usual e=3 reflex fails. What is wrong is that the SAME plaintext
+# was sent twice under one key with a known additive offset between the two
+# sends, and two related messages under a shared modulus are related ciphertexts.
+def build_franklin(rng: random.Random, message: bytes, prefix: str) -> dict[str, str]:
+    m, e = b2i(message), 3
+    while True:
+        p, q = gen_prime(rng, 512), gen_prime(rng, 512)
+        if p == q or (p - 1) * (q - 1) % e == 0:
+            continue
+        n = p * q
+        offset = rng.getrandbits(96) | 1
+        if m + offset >= n:
+            continue
+        c1, c2 = pow(m, e, n), pow(m + offset, e, n)
+        # The closed form below divides by this; a zero denominator is a one in
+        # 2^1024 draw, but a stage that fails to solve is a rejected spec.
+        if (c2 - c1 + 2 * pow(offset, 3, n)) % n == 0:
+            continue
+        return {f"{prefix}n.txt": str(n), f"{prefix}e.txt": str(e),
+                f"{prefix}c1.txt": str(c1), f"{prefix}c2.txt": str(c2),
+                f"{prefix}offset.txt": str(offset)}
+
+
+def solve_franklin(prefix: str = "") -> bytes:
+    """Franklin-Reiter for e = 3, in closed form.
+
+    The general attack takes gcd(x^3 - c1, (x + r)^3 - c2) over Z/n[x] and reads
+    the linear remainder. For e = 3 that gcd collapses to a single expression, so
+    no polynomial arithmetic is needed:
+
+        m = r·(c2 + 2·c1 - r^3) / (c2 - c1 + 2·r^3)   (mod n)
+    """
+    n = _read_int(f"{prefix}n.txt")
+    c1 = _read_int(f"{prefix}c1.txt")
+    c2 = _read_int(f"{prefix}c2.txt")
+    r = _read_int(f"{prefix}offset.txt")
+    numerator = r * (c2 + 2 * c1 - pow(r, 3, n)) % n
+    denominator = (c2 - c1 + 2 * pow(r, 3, n)) % n
+    if math.gcd(denominator, n) != 1:
+        raise ValueError("franklin: the denominator is not invertible mod n")
+    m = numerator * pow(denominator, -1, n) % n
+    if pow(m, 3, n) != c1:
+        raise ValueError("franklin: the two ciphertexts are not related by that offset")
+    return i2b(m)
+
+
+# ---------------------------------------------------------------------------
+# rank 7 — one faulty CRT signature among many good ones (Bellcore)
+# ---------------------------------------------------------------------------
+# Nothing about the key is weak here, and the ciphertext is an ordinary e=65537
+# encryption that no factoring shortcut touches. The break is in a batch of
+# signed receipts shipped alongside it: the signer used CRT, one signature was
+# produced while a branch glitched, and a single signature that fails to verify
+# factors the modulus outright. Finding it means verifying all of them.
+def build_crtfault(rng: random.Random, message: bytes, prefix: str) -> dict[str, str]:
+    m, e = b2i(message), 65537
+    while True:
+        p, q = gen_prime(rng, 512), gen_prime(rng, 512)
+        if p == q:
+            continue
+        phi = (p - 1) * (q - 1)
+        if phi % e == 0:
+            continue
+        n = p * q
+        if m >= n:
+            continue
+        d = pow(e, -1, phi)
+        dp, dq, qinv = d % (p - 1), d % (q - 1), pow(q, -1, p)
+        faulty_at = rng.randrange(12)
+        receipts = []
+        for index in range(12):
+            value = b2i(hashlib.sha256(f"receipt-{prefix}{index}".encode()).digest())
+            sp, sq = pow(value, dp, p), pow(value, dq, q)
+            if index == faulty_at:
+                sq = (sq + rng.randrange(1, 1 << 32)) % q      # one glitched branch
+            sig = (sq + q * (qinv * (sp - sq) % p)) % n
+            receipts.append(f"{value}:{sig}")
+        return {f"{prefix}n.txt": str(n), f"{prefix}e.txt": str(e),
+                f"{prefix}c.txt": str(pow(m, e, n)),
+                f"{prefix}receipts.txt": "\n".join(receipts) + "\n"}
+
+
+def solve_crtfault(prefix: str = "") -> bytes:
+    n = _read_int(f"{prefix}n.txt")
+    e = _read_int(f"{prefix}e.txt")
+    c = _read_int(f"{prefix}c.txt")
+    with open(f"{prefix}receipts.txt", encoding="utf-8") as fh:
+        receipts = [line.split(":") for line in fh.read().split() if ":" in line]
+    for raw_value, raw_sig in receipts:
+        value, sig = int(raw_value), int(raw_sig)
+        if pow(sig, e, n) == value:
+            continue                          # this one verifies; keep looking
+        # A CRT signature correct mod q but wrong mod p satisfies
+        # sig^e - value = 0 (mod q) and != 0 (mod p), so the gcd is exactly q.
+        factor = math.gcd(pow(sig, e, n) - value, n)
+        if 1 < factor < n:
+            other = n // factor
+            d = pow(e, -1, (factor - 1) * (other - 1))
+            return i2b(pow(c, d, n))
+    raise ValueError("crtfault: every receipt verifies; no faulted signature to exploit")
+
+
+# ---------------------------------------------------------------------------
 # the catalogue the maker composes from
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True)
@@ -441,6 +548,16 @@ STAGES: dict[str, Stage] = {
         "a prime whose p-1 is smooth (Pollard's p-1 factorization)",
         "One prime is only a product of small factors, plus one.",
         build_pollard, "solve_pollard"),
+    "franklin": Stage(
+        "franklin", 6, "Franklin-Reiter related messages",
+        "one plaintext sent twice under one key with a known offset",
+        "The key is fine. Look at what was sent, not at how.",
+        build_franklin, "solve_franklin"),
+    "crtfault": Stage(
+        "crtfault", 7, "Bellcore CRT fault",
+        "a CRT signature produced while one branch faulted (a bad signature factors n)",
+        "The receipts were signed by the same key that encrypted the payload.",
+        build_crtfault, "solve_crtfault"),
 }
 
 STAGE_NAMES: list[str] = sorted(STAGES, key=lambda k: STAGES[k].rank)
