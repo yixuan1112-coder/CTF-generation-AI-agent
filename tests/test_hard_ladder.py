@@ -131,10 +131,6 @@ class HardComposeStages(unittest.TestCase):
         self.assertGreaterEqual(len(deep.stages), HINT_DEPTH_LIMIT)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class PrngChallenge(unittest.TestCase):
     """The MT19937 token-service challenge: hard to build the attack, verified solvable."""
 
@@ -148,6 +144,33 @@ class PrngChallenge(unittest.TestCase):
             for content in spec.artifacts.values():
                 self.assertNotIn(spec.flag, content)     # flag never in a player file
             self.assertTrue(verify_spec(spec).valid, f"mt19937@{seed} did not solve")
+
+
+class HardcoreChallenges(unittest.TestCase):
+    """Built to resist a toolkit-equipped agent: one must be derived, one computed."""
+
+    def test_lcg_nonce_is_solved_by_the_derived_attack(self):
+        from autoctf_gan.hardcore import gen_lcg_nonce_ecdsa
+        from autoctf_gan.verify import verify_spec
+        for seed in (1, 2, 3):
+            spec = gen_lcg_nonce_ecdsa(seed=seed, generation=0, flag_secret=f"s{seed}")
+            self.assertEqual(spec.mechanics["attack_class"], "lcgnonce")
+            self.assertEqual(spec.hints, [])
+            for c in spec.artifacts.values():
+                self.assertNotIn(spec.flag, c)
+            self.assertTrue(verify_spec(spec).valid, f"lcgnonce@{seed} did not solve")
+
+    def test_dlog_wall_builds_hides_the_exponent_and_verifies(self):
+        from autoctf_gan.hardcore import gen_dlog_wall
+        from autoctf_gan.verify import verify_spec
+        spec = gen_dlog_wall(seed=7, generation=0, flag_secret="s7")
+        self.assertEqual(spec.mechanics["attack_class"], "dlogwall")
+        blob = "".join(spec.artifacts.values())
+        self.assertNotIn(spec.flag, blob)
+        # the trapdoor exponent lives only in the organizer solver, never shipped
+        self.assertNotIn("solver.py", spec.artifacts)
+        self.assertTrue(verify_spec(spec).valid)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -46,6 +46,8 @@ _COMPOSED = [
     (1005, ["pollard", "wiener", "hastad", "fermat", "commonmod", "smalle"]),
     (1006, ["franklin", "crtfault", "pollard", "wiener", "fermat",
             "hastad", "commonmod", "smalle"]),   # eight sealed layers
+    (1007, ["crtfault", "franklin", "pollard", "wiener", "fermat", "hastad",
+            "commonmod", "smalle", "wiener", "fermat", "hastad", "commonmod"]),  # twelve
 ]
 
 
@@ -62,7 +64,7 @@ def _strip_hints(spec):
     return spec
 
 
-def practice_specs(secret: str):
+def practice_specs(secret: str, cache_dir=None):
     """Build the curated catalogue as a list of ChallengeSpec.
 
     A rung whose toolchain is missing on this host (e.g. the fpylll-backed
@@ -96,19 +98,54 @@ def practice_specs(secret: str):
                                          flag_secret=secret))
     except Exception as exc:
         print(f"[practice] skipped mt19937: {type(exc).__name__}: {exc}")
+    # The hardcore tier: a bespoke ECDSA variant that must be DERIVED, and a
+    # discrete-log COMPUTE wall with no shortcut — the two that a toolkit-equipped
+    # agent cannot clear by recognition alone.
+    from autoctf_gan.hardcore import gen_dlog_wall, gen_lcg_nonce_ecdsa
+    try:
+        specs.append(gen_lcg_nonce_ecdsa(seed=PRACTICE_SEED, generation=0, flag_secret=secret))
+    except Exception as exc:
+        print(f"[practice] skipped lcgnonce: {type(exc).__name__}: {exc}")
+    try:
+        specs.append(gen_dlog_wall(seed=PRACTICE_SEED, generation=0, flag_secret=secret,
+                                   cache_dir=cache_dir))
+    except Exception as exc:
+        print(f"[practice] skipped dlogwall: {type(exc).__name__}: {exc}")
     return [_strip_hints(s) for s in specs]
+
+
+# Bump this whenever the catalogue changes (a challenge added, removed, or its
+# generator altered). A boot whose stored version already matches skips the whole
+# rebuild — otherwise every restart pays ~15s to re-derive 20 specs (safe primes,
+# deep RSA chains) only to dedup them away. A version bump forces one rebuild.
+CATALOGUE_VERSION = 4
 
 
 def seed_practice(store) -> int:
     """Ensure the practice catalogue exists in the library. Returns how many were
-    newly inserted (0 on every boot after the first)."""
+    newly inserted (0 on a boot whose catalogue is already current)."""
+    version_file = store.path.with_name("practice_version")
+    try:
+        current = version_file.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        current = ""
+    # Fast path: catalogue unchanged and already seeded — do not rebuild anything.
+    if current == str(CATALOGUE_VERSION) and store.library_count(origin="practice") > 0:
+        store.clear_practice_hints()
+        return 0
+
     secret = store.practice_secret()
+    cache_dir = store.path.parent
     inserted = 0
-    for spec in practice_specs(secret):
+    for spec in practice_specs(secret, cache_dir=cache_dir):
         if store.archive_challenge(spec=spec, track=spec.category,
                                    team_name="", origin="practice"):
             inserted += 1
     # Enforce the no-hints policy even on rows an older build already seeded with
     # hints — archive_challenge de-dupes on the flag hash and never rewrites them.
     store.clear_practice_hints()
+    try:
+        version_file.write_text(str(CATALOGUE_VERSION), encoding="utf-8")
+    except OSError:
+        pass
     return inserted
