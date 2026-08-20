@@ -132,12 +132,23 @@ class LibraryApiTests(unittest.TestCase):
         with urllib.request.urlopen(self.base + path, timeout=20) as resp:
             return json.loads(resp.read() or b"{}")
 
-    def post(self, path, data):
+    def post(self, path, data, token=None):
         req = urllib.request.Request(self.base + path, data=json.dumps(data).encode(),
                                      method="POST")
         req.add_header("Content-Type", "application/json")
+        if token:
+            req.add_header("Authorization", f"Bearer {token}")
         with urllib.request.urlopen(req, timeout=20) as resp:
             return json.loads(resp.read() or b"{}")
+
+    def get_auth(self, path, token):
+        req = urllib.request.Request(self.base + path)
+        req.add_header("Authorization", f"Bearer {token}")
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            return json.loads(resp.read() or b"{}")
+
+    def register(self, name):
+        return self.post("/api/teams", {"name": name})["token"]
 
     def test_the_library_page_is_served(self):
         with urllib.request.urlopen(self.base + "/library", timeout=10) as resp:
@@ -215,21 +226,56 @@ class LibraryApiTests(unittest.TestCase):
         classes = {e["attack_class"] for e in entries}
         self.assertIn("smalle", classes)
 
-    def test_a_practice_flag_checks_out(self):
-        """The seeded flag is checkable, and never present in the served files."""
+    def _practice_challenge(self, generation=0):
+        """(entry, real_flag) for a seeded practice rung, via the server secret."""
         from autoctf_gan.crypto_ladder import gen_crypto_ladder
         from arena_platform.practice import PRACTICE_SEED
 
         secret = self.arena.store.practice_secret()
-        spec = gen_crypto_ladder(seed=PRACTICE_SEED, generation=0, flag_secret=secret)
+        spec = gen_crypto_ladder(seed=PRACTICE_SEED, generation=generation,
+                                 flag_secret=secret)
         entries = self.get("/api/library?origin=practice&limit=100")["entries"]
-        match = next(e for e in entries if e["title"] == spec.title)
-        stored = self.get(f"/api/library/{match['id']}")
+        return next(e for e in entries if e["title"] == spec.title), spec.flag
+
+    def test_a_practice_flag_checks_out(self):
+        """A registered team's flag is checkable; files never carry the answer."""
+        entry, flag = self._practice_challenge()
+        token = self.register("checker-team")
+        stored = self.get(f"/api/library/{entry['id']}")
         self.assertNotIn("flag_sha256", json.dumps(stored))
-        self.assertFalse(self.post(f"/api/library/{match['id']}/submit",
-                                   {"flag": "flag{nope}"})["correct"])
-        self.assertTrue(self.post(f"/api/library/{match['id']}/submit",
-                                  {"flag": spec.flag})["correct"])
+        self.assertFalse(self.post(f"/api/library/{entry['id']}/submit",
+                                   {"flag": "flag{nope}"}, token=token)["correct"])
+        self.assertTrue(self.post(f"/api/library/{entry['id']}/submit",
+                                  {"flag": flag}, token=token)["correct"])
+
+    def test_practice_submit_requires_registration(self):
+        entry, flag = self._practice_challenge()
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            self.post(f"/api/library/{entry['id']}/submit", {"flag": flag})   # no token
+        self.assertEqual(ctx.exception.code, 401)
+
+    def test_a_solve_is_attributed_and_scored(self):
+        entry, flag = self._practice_challenge(generation=1)
+        token = self.register("scorers")
+        # first correct submit is a new solve; a repeat is not
+        first = self.post(f"/api/library/{entry['id']}/submit", {"flag": flag}, token=token)
+        self.assertTrue(first["correct"] and first["first_time"])
+        again = self.post(f"/api/library/{entry['id']}/submit", {"flag": flag}, token=token)
+        self.assertTrue(again["correct"] and not again["first_time"])
+        # it shows in this team's solves and on the scoreboard
+        mine = self.get_auth("/api/practice/solves", token)
+        self.assertIn(entry["id"], mine["solved"])
+        board = self.get("/api/practice/scoreboard")["scoreboard"]
+        row = next(r for r in board if r["team"] == "scorers")
+        self.assertGreaterEqual(row["solved"], 1)
+        self.assertGreaterEqual(row["points"], 1)
+
+    def test_practice_challenges_ship_no_hints(self):
+        """Practice is where difficulty is the point, so no hint hands the answer."""
+        entries = self.get("/api/library?origin=practice&limit=100")["entries"]
+        self.assertTrue(entries)
+        for e in entries:
+            self.assertEqual(e["hints"], [], f"{e['title']} still carries hints")
 
     def test_origin_is_allow_listed(self):
         hostile = urllib.parse.quote("' OR 1=1 --")

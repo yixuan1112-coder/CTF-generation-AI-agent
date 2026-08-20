@@ -133,3 +133,21 @@ class HardComposeStages(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PrngChallenge(unittest.TestCase):
+    """The MT19937 token-service challenge: hard to build the attack, verified solvable."""
+
+    def test_it_builds_solves_and_hides_the_flag(self):
+        from autoctf_gan.prng import gen_mt19937_predict
+        from autoctf_gan.verify import verify_spec
+
+        for seed in (7, 8, 9):
+            spec = gen_mt19937_predict(seed=seed, generation=0, flag_secret=f"p{seed}")
+            self.assertEqual(spec.mechanics["attack_class"], "mt19937")
+            for content in spec.artifacts.values():
+                self.assertNotIn(spec.flag, content)     # flag never in a player file
+            self.assertTrue(verify_spec(spec).valid, f"mt19937@{seed} did not solve")
+
+if __name__ == "__main__":
+    unittest.main()

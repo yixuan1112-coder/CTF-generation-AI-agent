@@ -34,12 +34,32 @@ PRACTICE_SEED = 20260820
 
 # Composed challenges to include past the plain ladder, as explicit stage plans
 # so the catalogue is deterministic rather than dependent on catalogue indexing.
-# Each is given its own generation so its flag is distinct.
+# Each is given its own generation so its flag is distinct. The deep ones are
+# pure time sinks: every sealed layer must be broken in order before the next
+# one's key material even becomes readable, so a six-layer chain is six different
+# attacks with no shortcut and no parallelism.
 _COMPOSED = [
     (1001, ["wiener", "smalle"]),
     (1002, ["fermat", "hastad", "commonmod"]),
     (1003, ["franklin", "pollard", "wiener"]),   # showcases a detection-flavoured stage
+    (1004, ["crtfault", "franklin", "fermat", "commonmod"]),
+    (1005, ["pollard", "wiener", "hastad", "fermat", "commonmod", "smalle"]),
+    (1006, ["franklin", "crtfault", "pollard", "wiener", "fermat",
+            "hastad", "commonmod", "smalle"]),   # eight sealed layers
 ]
+
+
+def _strip_hints(spec):
+    """Practice challenges ship WITHOUT hints on purpose.
+
+    Hints exist in a live match to keep the co-evolution fair to an uploaded
+    agent under a clock. The practice catalogue is where difficulty is the point,
+    so naming the weakness or the technique in a hint just hands the answer to the
+    solver we are trying to challenge. The story stays — that is the scenario, not
+    a hint — but the hint list is emptied.
+    """
+    spec.hints = []
+    return spec
 
 
 def practice_specs(secret: str):
@@ -54,6 +74,7 @@ def practice_specs(secret: str):
     from autoctf_gan.compose import describe, gen_composed
     from autoctf_gan.crypto_ladder import (CRYPTO_LADDER, LADDER_NAMES,
                                            gen_crypto_ladder)
+    from autoctf_gan.prng import gen_mt19937_predict
 
     specs = []
     for generation in range(len(CRYPTO_LADDER)):
@@ -70,7 +91,12 @@ def practice_specs(secret: str):
         except Exception as exc:
             print(f"[practice] skipped composed {'+'.join(stages)!r}: "
                   f"{type(exc).__name__}: {exc}")
-    return specs
+    try:
+        specs.append(gen_mt19937_predict(seed=PRACTICE_SEED, generation=0,
+                                         flag_secret=secret))
+    except Exception as exc:
+        print(f"[practice] skipped mt19937: {type(exc).__name__}: {exc}")
+    return [_strip_hints(s) for s in specs]
 
 
 def seed_practice(store) -> int:

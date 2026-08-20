@@ -108,6 +108,18 @@ CREATE INDEX IF NOT EXISTS idx_matches_team ON matches(team_id, status);
 CREATE INDEX IF NOT EXISTS idx_matches_board ON matches(track, status, reached_gen);
 CREATE INDEX IF NOT EXISTS idx_library_recent ON library(created_at DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_library_dedup ON library(flag_sha256);
+
+-- Who solved which PRACTICE challenge. One row per (team, challenge); the
+-- primary key makes a repeat submission idempotent, so "solved" is a fact, not a
+-- running tally. Match-authored challenges are not attributed here — practice is
+-- the mode where identity matters.
+CREATE TABLE IF NOT EXISTS practice_solves (
+    team_id    TEXT NOT NULL REFERENCES teams(id),
+    entry_id   TEXT NOT NULL REFERENCES library(id),
+    solved_at  REAL NOT NULL,
+    PRIMARY KEY (team_id, entry_id)
+);
+CREATE INDEX IF NOT EXISTS idx_practice_team ON practice_solves(team_id);
 """
 
 
@@ -184,6 +196,39 @@ class Store:
         except OSError:
             pass
         return value
+
+    def record_practice_solve(self, team_id: str, entry_id: str) -> bool:
+        """Attribute a correct practice submission to a team. Idempotent — a
+        second correct submit of the same challenge is not a new solve. Returns
+        True only the first time."""
+        with self._write_lock:
+            cur = self.conn().execute(
+                "INSERT OR IGNORE INTO practice_solves (team_id, entry_id, solved_at) "
+                "VALUES (?, ?, ?)", (team_id, entry_id, time.time()))
+        return bool(cur.rowcount)
+
+    def practice_solves_for_team(self, team_id: str) -> list[str]:
+        rows = self.conn().execute(
+            "SELECT entry_id FROM practice_solves WHERE team_id = ?", (team_id,))
+        return [r["entry_id"] for r in rows]
+
+    def practice_scoreboard(self, *, limit: int = 100) -> list[dict]:
+        """Per team: how many practice challenges solved, points, and when they
+        last scored. Points weight harder challenges — a rung's rank plus one, so
+        a boss rung is worth more than the cube-root warm-up."""
+        rows = self.conn().execute(
+            """SELECT t.name AS team,
+                      COUNT(*) AS solved,
+                      COALESCE(SUM(l.rank + 1), 0) AS points,
+                      MAX(p.solved_at) AS last_solved
+                 FROM practice_solves p
+                 JOIN teams t   ON t.id = p.team_id
+                 JOIN library l ON l.id = p.entry_id
+                WHERE l.origin = 'practice'
+                GROUP BY p.team_id
+                ORDER BY points DESC, last_solved ASC
+                LIMIT ?""", (max(1, min(limit, 500)),))
+        return [dict(r) for r in rows]
 
     # ---- teams -------------------------------------------------------------
     def create_team(self, name: str, contact: str = "") -> dict[str, Any]:

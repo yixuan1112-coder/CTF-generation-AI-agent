@@ -550,8 +550,28 @@ class Handler(BaseHTTPRequestHandler):
                                    f'attachment; filename="{entry_id}.zip"'})
             if tail == "submit" and method == "POST":
                 flag = str(self._json_body().get("flag", ""))[:512]
+                # Practice is attributed: you must be a registered team to attempt
+                # it, so every solve has a name attached. The match-authored shelf
+                # stays open — it is a highlight reel, not a scored exercise.
+                if entry.get("origin") == "practice":
+                    team = arena.auth(self._token(qs))
+                    correct = store.library_check_flag(entry_id, flag)
+                    out = {"correct": correct}
+                    if correct:
+                        out["first_time"] = store.record_practice_solve(team["id"], entry_id)
+                    return self._json(out)
                 return self._json({"correct": store.library_check_flag(entry_id, flag)})
             raise ApiError("unknown library sub-resource", 404)
+
+        if path == "/api/practice/solves" and method == "GET":
+            team = arena.auth(self._token(qs))
+            solved = store.practice_solves_for_team(team["id"])
+            return self._json({"team": team["name"], "solved": solved,
+                               "count": len(solved)})
+
+        if path == "/api/practice/scoreboard" and method == "GET":
+            limit = min(200, int(qs.get("limit", ["100"])[0] or 100))
+            return self._json({"scoreboard": store.practice_scoreboard(limit=limit)})
 
         if path == "/api/template" and method == "GET":
             template = Path(__file__).resolve().parents[1] / "team_agent.py"

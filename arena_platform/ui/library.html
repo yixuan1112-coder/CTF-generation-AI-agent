@@ -13,7 +13,7 @@
     <h1 id="mode-title">Challenges</h1>
     <p class="lead" id="mode-lead">
       Pick a challenge, download its files, and solve it however you like — by hand or with
-      your own tools — then paste the flag to check it. No account, no agent upload required.
+      your own tools — then paste the flag to check it.
     </p>
     <div class="row">
       <button class="btn" id="tab-practice" onclick="setMode('practice')">Practice set</button>
@@ -23,24 +23,32 @@
     </div>
   </div>
 
-  <div class="panel" style="margin-top:24px">
-    <div class="row" style="margin-bottom:14px">
-      <select id="source" style="max-width:260px;display:none">
-        <option value="">All designers</option>
-        <option value="llm">Designed by a model</option>
-        <option value="catalog">Enumerated from the catalogue</option>
-      </select>
-      <span class="badge" id="count-badge">loading…</span>
-      <span class="spacer" style="flex:1"></span>
-      <span class="badge" id="brain-badge"></span>
+  <!-- practice identity / registration bar -->
+  <div class="panel" id="practice-bar" style="margin-top:18px;display:none"></div>
+
+  <div class="grid" style="grid-template-columns:1fr;gap:18px;margin-top:18px">
+    <div class="panel">
+      <div class="row" style="margin-bottom:14px">
+        <select id="source" style="max-width:260px;display:none">
+          <option value="">All designers</option>
+          <option value="llm">Designed by a model</option>
+          <option value="catalog">Enumerated from the catalogue</option>
+        </select>
+        <span class="badge" id="count-badge">loading…</span>
+        <span class="spacer" style="flex:1"></span>
+        <span class="badge" id="brain-badge"></span>
+      </div>
+      <div id="list"><div class="empty"><span class="spinner"></span> loading…</div></div>
     </div>
-    <div id="list"><div class="empty"><span class="spinner"></span> loading…</div></div>
   </div>
+
+  <div class="panel" id="scoreboard" style="margin-top:18px;display:none"></div>
 </div>
 
 <script src="/static/arena.js"></script>
 <script>
 let MODE = new URLSearchParams(location.search).get("mode") === "match" ? "match" : "practice";
+const State = { solved: new Set(), total: 0 };
 
 const DIFFICULTY = (rank) =>
   rank <= 2 ? ["easy", ""] : rank <= 6 ? ["medium", "amber"] : ["hard", "violet"];
@@ -49,12 +57,88 @@ async function loadConfig() {
   try {
     const cfg = await (await fetch("/api/config")).json();
     const brain = cfg.design_brain || {};
-    $("#brain-badge").textContent = brain.configured
-      ? `design brain: ${brain.model}` : "";
+    $("#brain-badge").textContent = brain.configured ? `design brain: ${brain.model}` : "";
     $("#brain-badge").className = "badge " + (brain.configured ? "violet" : "");
   } catch (e) { /* the badge is decoration; the list is the page */ }
 }
 
+/* ---- registration + who-am-I ------------------------------------------- */
+async function registerTeam() {
+  const name = ($("#reg-name").value || "").trim();
+  const msg = $("#reg-msg");
+  if (name.length < 2) { msg.textContent = "name must be at least 2 characters"; return; }
+  msg.textContent = "registering…";
+  try {
+    const t = await api("/api/teams", { method: "POST", body: { name } });
+    Auth.set({ id: t.team_id, name: t.name, token: t.token });
+    await refreshMe();
+    renderPracticeBar();
+    load();
+    refreshScoreboard();
+  } catch (e) { msg.textContent = e.message; }
+}
+
+function switchTeam() { Auth.clear(); State.solved = new Set(); renderPracticeBar(); load(); }
+
+async function refreshMe() {
+  State.solved = new Set();
+  if (!Auth.get()) return;
+  try {
+    const d = await api("/api/practice/solves");
+    State.solved = new Set(d.solved || []);
+  } catch (e) { /* stale token: treat as logged out for display */ }
+}
+
+function renderPracticeBar() {
+  const bar = $("#practice-bar");
+  if (MODE !== "practice") { bar.style.display = "none"; return; }
+  bar.style.display = "";
+  const team = Auth.get();
+  if (team) {
+    bar.innerHTML = `
+      <div class="row" style="align-items:center;gap:12px">
+        <span class="badge violet">playing as ${esc(team.name)}</span>
+        <b style="color:var(--fg)">Solved ${State.solved.size} / ${State.total}</b>
+        <span class="sub">your solves are recorded on the scoreboard below</span>
+        <span class="spacer" style="flex:1"></span>
+        <button class="btn ghost small" onclick="switchTeam()">switch team</button>
+      </div>`;
+  } else {
+    bar.innerHTML = `
+      <div style="margin-bottom:8px"><b style="color:var(--fg)">Register to start solving</b></div>
+      <p class="sub" style="margin:0 0 10px">
+        Practice challenges are attributed — pick a team name so your solves are yours and show
+        up on the scoreboard. No email, no password; a token is stored in this browser.</p>
+      <div class="row" style="gap:8px;align-items:center">
+        <input id="reg-name" placeholder="team name, e.g. Lattice Reducers" maxlength="48"
+               style="max-width:320px" onkeydown="if(event.key==='Enter')registerTeam()"/>
+        <button class="btn" onclick="registerTeam()">Register</button>
+        <span id="reg-msg" class="sub"></span>
+      </div>`;
+  }
+}
+
+/* ---- scoreboard --------------------------------------------------------- */
+async function refreshScoreboard() {
+  const box = $("#scoreboard");
+  if (MODE !== "practice") { box.style.display = "none"; return; }
+  box.style.display = "";
+  let rows = [];
+  try { rows = (await (await fetch("/api/practice/scoreboard?limit=50")).json()).scoreboard || []; }
+  catch (e) { box.innerHTML = ""; return; }
+  const me = Auth.get()?.name;
+  box.innerHTML = `
+    <h2 style="margin:0 0 12px">Practice scoreboard</h2>
+    ${rows.length ? `<table><thead><tr>
+        <th>#</th><th>Team</th><th class="num">Solved</th><th class="num">Points</th></tr></thead>
+      <tbody>${rows.map((r, i) => `<tr${r.team === me ? ' style="background:rgba(139,92,246,.12)"' : ''}>
+        <td class="num">${i + 1}</td><td><b>${esc(r.team)}</b>${r.team === me ? ' <span class="sub">(you)</span>' : ''}</td>
+        <td class="num">${r.solved}</td><td class="num">${r.points}</td></tr>`).join("")}
+      </tbody></table>`
+      : `<p class="sub" style="margin:0">No solves yet — be the first.</p>`}`;
+}
+
+/* ---- challenge list ----------------------------------------------------- */
 function setMode(mode) {
   MODE = mode;
   history.replaceState(null, "", mode === "match" ? "?mode=match" : location.pathname);
@@ -66,32 +150,35 @@ function setMode(mode) {
     $("#mode-title").textContent = "Practice challenges";
     $("#mode-lead").textContent =
       "A fixed set that stays put — every rung of the crypto ladder plus a few composed " +
-      "challenges. Download the files, solve it by hand or point your own AI agent at it, " +
-      "then paste the flag to check it. Same challenge for everyone.";
+      "challenges. Register a team, download the files, solve it by hand or with your own AI " +
+      "agent, then paste the flag. Same challenges for everyone; your solves are tracked.";
   } else {
     $("#mode-eyebrow").textContent = "Authored during real matches";
     $("#mode-title").textContent = "Challenges the maker invented";
     $("#mode-lead").textContent =
-      "These exist because a team's agent cleared every bounded rung and pushed the maker " +
-      "into authoring mode. It chained verified attacks into something no ladder contains, " +
-      "proved it solvable, and deployed it. The survivors are kept here after the match ends.";
+      "These exist because a team's agent cleared every bounded rung and pushed the maker into " +
+      "authoring mode. The survivors are kept here after the match ends. Open to try, no login.";
   }
+  renderPracticeBar();
+  refreshScoreboard();
   load();
 }
 
 async function load() {
+  if (MODE === "practice") await refreshMe();
   const source = MODE === "match" ? $("#source").value : "";
   const url = `/api/library?limit=100&origin=${MODE}` + (source ? `&source=${source}` : "");
   let data;
-  try {
-    data = await (await fetch(url)).json();
-  } catch (e) {
+  try { data = await (await fetch(url)).json(); }
+  catch (e) {
     $("#list").innerHTML = `<div class="empty">could not reach the arena: ${esc(e.message)}</div>`;
     return;
   }
+  State.total = data.practice_total || 0;
   const n = MODE === "practice" ? data.practice_total : data.match_total;
   $("#count-badge").textContent = MODE === "practice"
     ? `${n} practice challenge(s)` : `${n} authored`;
+  renderPracticeBar();
   const entries = data.entries || [];
   if (!entries.length) {
     $("#list").innerHTML = MODE === "practice"
@@ -105,6 +192,7 @@ async function load() {
 
 function render(e) {
   const [diffLabel, diffClass] = DIFFICULTY(e.rank);
+  const solved = State.solved.has(e.id);
   const stages = (e.stages || []).length
     ? e.stages.map((s) => `<span class="badge">${esc(s)}</span>`).join(" → ")
     : `<span class="badge">${esc(e.attack_class)}</span>`;
@@ -112,41 +200,36 @@ function render(e) {
   const files = (e.file_list || []).map(
     (f) => `<li><code>${esc(f.name)}</code> <span class="sub">${f.bytes} B</span></li>`).join("");
   const meta = MODE === "practice"
-    ? `<span class="badge ${diffClass}">${diffLabel}</span>
+    ? `${solved ? `<span class="badge" style="background:rgba(74,222,128,.15);color:#4ade80">✓ solved</span>` : ""}
+       <span class="badge ${diffClass}">${diffLabel}</span>
        <span class="badge">${esc(e.track)}</span>
        ${e.depth > 1 ? `<span class="badge">depth ${e.depth}</span>` : ""}`
     : `${e.plan_source === "llm"
-          ? `<span class="badge violet">designed by a model</span>`
-          : `<span class="badge">catalogue</span>`}
-       ${e.solved_in_match
-          ? `<span class="badge">solved in its match</span>`
-          : `<span class="badge amber">never solved</span>`}
-       <span class="badge">depth ${e.depth}</span>
-       <span class="badge">rank ${e.rank}</span>`;
+          ? `<span class="badge violet">designed by a model</span>` : `<span class="badge">catalogue</span>`}
+       ${e.solved_in_match ? `<span class="badge">solved in its match</span>`
+          : `<span class="badge warn">never solved</span>`}
+       <span class="badge">depth ${e.depth}</span><span class="badge">rank ${e.rank}</span>`;
   const footer = MODE === "practice"
-    ? `<p class="sub" style="margin:10px 0 0">Solved ${e.solve_count} time(s) here.</p>`
+    ? `<p class="sub" style="margin:10px 0 0">Solved by ${e.solve_count} submission(s).</p>`
     : `<p class="sub" style="margin:10px 0 0">Authored against
         ${esc(e.team_name || "a team")} · solved ${e.solve_count} time(s) here</p>`;
   return `
-  <div class="panel" style="margin:0 0 14px">
+  <div class="panel" style="margin:0 0 14px${solved ? ";border-color:rgba(74,222,128,.4)" : ""}">
     <h2 style="margin-bottom:6px">${esc(e.title)}</h2>
     <div class="row" style="gap:8px;margin-bottom:10px">${meta}</div>
     <p style="color:var(--dim);margin:0 0 12px">${esc(e.story)}</p>
     <div style="margin-bottom:12px">${stages}</div>
     ${e.designer_note ? `<p class="sub" style="margin:0 0 12px">${esc(e.designer_note)}</p>` : ""}
     <div class="grid" style="gap:18px">
-      <div>
-        <h3 style="font-size:13px;color:var(--faint);margin:0 0 6px">HINTS</h3>
-        <ul style="margin:0;padding-left:18px;color:var(--dim);font-size:13.5px">${hints}</ul>
-      </div>
-      <div>
-        <h3 style="font-size:13px;color:var(--faint);margin:0 0 6px">FILES</h3>
-        <ul style="margin:0;padding-left:18px;color:var(--dim);font-size:13.5px">${files}</ul>
-      </div>
+      <div><h3 style="font-size:13px;color:var(--faint);margin:0 0 6px">HINTS</h3>
+        <ul style="margin:0;padding-left:18px;color:var(--dim);font-size:13.5px">${hints}</ul></div>
+      <div><h3 style="font-size:13px;color:var(--faint);margin:0 0 6px">FILES</h3>
+        <ul style="margin:0;padding-left:18px;color:var(--dim);font-size:13.5px">${files}</ul></div>
     </div>
     <div class="row" style="margin-top:14px;gap:8px">
       <a class="btn ghost" href="/api/library/${esc(e.id)}/download">Download package</a>
-      <input id="flag-${esc(e.id)}" placeholder="flag{…}" style="max-width:280px"/>
+      <input id="flag-${esc(e.id)}" placeholder="flag{…}" style="max-width:280px"
+             onkeydown="if(event.key==='Enter')submitFlag('${esc(e.id)}')"/>
       <button class="btn" onclick="submitFlag('${esc(e.id)}')">Submit</button>
       <span id="verdict-${esc(e.id)}" class="sub"></span>
     </div>
@@ -158,18 +241,24 @@ async function submitFlag(id) {
   const verdict = document.getElementById(`verdict-${id}`);
   const flag = (document.getElementById(`flag-${id}`).value || "").trim();
   if (!flag) { verdict.textContent = "enter a flag first"; return; }
+  if (MODE === "practice" && !Auth.get()) {
+    verdict.textContent = "register a team first ↑";
+    verdict.style.color = "var(--amber, #fbbf24)";
+    $("#reg-name")?.focus();
+    return;
+  }
   verdict.textContent = "checking…";
   try {
-    const r = await fetch(`/api/library/${id}/submit`, {
-      method: "POST", headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({flag}),
-    });
-    const data = await r.json();
-    verdict.textContent = data.correct ? "✅ correct" : "❌ not the flag";
+    const data = await api(`/api/library/${id}/submit`, { method: "POST", body: { flag } });
+    verdict.textContent = data.correct
+      ? (data.first_time ? "✅ correct — first solve!" : "✅ correct") : "❌ not the flag";
     verdict.style.color = data.correct ? "var(--ok, #4ade80)" : "var(--faint)";
-    if (data.correct) load();
+    if (data.correct) { await refreshMe(); renderPracticeBar(); load(); refreshScoreboard(); }
   } catch (e) {
-    verdict.textContent = `error: ${e.message}`;
+    // 401 == token missing/expired: nudge to register
+    if (/token/i.test(e.message)) { Auth.clear(); renderPracticeBar();
+      verdict.textContent = "register a team first ↑"; verdict.style.color = "var(--amber,#fbbf24)"; }
+    else verdict.textContent = `error: ${e.message}`;
   }
 }
 
