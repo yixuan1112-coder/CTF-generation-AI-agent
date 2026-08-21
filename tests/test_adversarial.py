@@ -25,6 +25,7 @@ from autoctf_gan.airesistant import (AIRESISTANT_BUILDERS, gen_honeytrap,
 from autoctf_gan.agentbench import (AGENTBENCH_BUILDERS, gen_chainlink,
                                     gen_falsestart, gen_toolliar)
 from autoctf_gan.bespoke import BESPOKE_BUILDERS, gen_codebook, gen_cpatrace
+from autoctf_gan.composite import COMPOSITE_BUILDERS, gen_cascade, gen_triad
 from autoctf_gan.hardtier import (HARDTIER_BUILDERS, gen_mqlin, gen_phsmooth,
                                   gen_rswelch)
 from autoctf_gan.humanhard import (HUMANHARD_BUILDERS, gen_blackbox,
@@ -38,7 +39,8 @@ from autoctf_gan.walls import WALLS_BUILDERS, gen_ecdlpwall, gen_rsawall
 
 ALL_BUILDERS = (ADVERSARIAL_BUILDERS + AIRESISTANT_BUILDERS + BESPOKE_BUILDERS
                 + AGENTBENCH_BUILDERS + PICOSTYLE_BUILDERS + MOREPICO_BUILDERS
-                + HUMANHARD_BUILDERS + HARDTIER_BUILDERS + WALLS_BUILDERS)
+                + HUMANHARD_BUILDERS + HARDTIER_BUILDERS + COMPOSITE_BUILDERS
+                + WALLS_BUILDERS)
 
 # Words that would hand over the technique. Each rung's difficulty is that a
 # player has to arrive at one of these on their own.
@@ -55,7 +57,7 @@ _GIVEAWAYS = ("knapsack", "gradient", "descent", "off-by-one", "off by one",
               "golden-ratio", "fibonacci", "beatty", "1.618", "sqrt(5)",
               "difference signature", "berlekamp", "welch", "reed-solomon",
               "error locator", "error-locator", "pohlig", "monomial",
-              "linearise", "linearize")
+              "linearise", "linearize", "reused", "cancel the blind", "subtract")
 
 
 class RungsAreSolvable(unittest.TestCase):
@@ -122,6 +124,7 @@ class TheAnswerIsNotInTheArtifacts(unittest.TestCase):
             (gen_rswelch, _rswelch_key),
             (gen_phsmooth, _phsmooth_key),
             (gen_mqlin, _mqlin_key),
+            (gen_cascade, _cascade_key),
         ]
         for builder, extract in cases:
             spec = builder(seed=404, generation=0, flag_secret="secret-404")
@@ -820,6 +823,21 @@ class WallsAreRealAndTrapdoorStaysHidden(unittest.TestCase):
         for content in spec.artifacts.values():
             self.assertNotIn(str(d), content)
             self.assertNotIn(spec.flag, content)
+
+
+def _cascade_key(spec):
+    import hashlib
+    import json
+    doc = json.loads(spec.artifacts["tags.json"])
+    M = int(doc["M"])
+    (h1, t1), (h2, t2) = [(int(x["h"]), int(x["t"])) for x in doc["tags"]]
+    k = (t1 - t2) * pow(h1 - h2, -1, M) % M
+    blob = bytes.fromhex(spec.artifacts["payload.enc"].strip())
+    out, counter = bytearray(), 0
+    while len(out) < len(blob):
+        out += hashlib.sha256(f"cascade-ks:{k}:{counter}".encode()).digest()
+        counter += 1
+    return bytes(a ^ b for a, b in zip(blob, out)).decode()
 
 if __name__ == "__main__":
     unittest.main()
