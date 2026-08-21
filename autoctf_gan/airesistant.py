@@ -34,6 +34,7 @@ none of them writes the flag into a player artifact.
 from __future__ import annotations
 
 import hashlib
+import json
 import random
 
 from .hardcore import _SEAL_TOOL, _seal
@@ -872,4 +873,303 @@ def gen_honeytrap(seed, generation, **kw):
         rank=8, max_runtime_s=60, flag_secret=flag_secret, difficulty="medium")
 
 
-AIRESISTANT_BUILDERS = [gen_oddproto, gen_vmkeygen, gen_lsbseed, gen_honeytrap]
+
+# ---------------------------------------------------------------------------
+# skewlog — the evidence that looks worst is the evidence that is sound
+# ---------------------------------------------------------------------------
+SKEW_NODES = 40
+SKEW_BAD = 18
+SKEW_ENTRIES = 10
+SKEW_PRIME = (1 << 521) - 1        # a Mersenne prime, published in the artifact
+
+_SKEWLOG_SOLVER = '''\
+"""Reconstruct an escrow secret from the node logs that are actually intact.
+
+The collector's own note points at the wrong evidence. It flags every node whose
+wall-clock is non-monotonic as suspect, and those flags are real — the clocks did
+step. But a stepped clock is a clock fault, not a tampered record, and the note
+never claims otherwise; it is just the first signal anyone reaches for.
+
+The signal that decides it is the digest chain, which each log carries and which
+the format note specifies in full:
+
+    d_0 = sha256(node_id)
+    d_i = sha256(d_{i-1} + event_i)
+
+An entry edited after the fact is not accompanied by a recomputed successor, so
+the chain stops agreeing at exactly that entry. Recomputing it end to end sorts
+the forty logs cleanly, and the split is the reverse of the flag list: the nodes
+with the ugly clocks are the ones whose records were never touched.
+
+That matters because the threshold equals the number of intact nodes exactly.
+There is no margin, no majority to lean on, and no subset to try — every intact
+share is required and no damaged one may be included. Lagrange at zero over the
+published prime then gives the escrow secret directly.
+"""
+import hashlib
+import json
+
+doc = json.load(open("logs.json", encoding="utf-8"))
+prime, threshold = int(doc["prime"]), doc["threshold"]
+
+good = []
+for node in doc["nodes"]:
+    digest = hashlib.sha256(node["node_id"].encode()).hexdigest()
+    intact = True
+    for entry in node["entries"]:
+        digest = hashlib.sha256((digest + entry["event"]).encode()).hexdigest()
+        if digest != entry["digest"]:
+            intact = False
+            break
+    if intact:
+        good.append((int(node["share_x"]), int(node["share_y"])))
+
+assert len(good) == threshold, f"{len(good)} intact logs, threshold is {threshold}"
+
+secret = 0
+for i, (xi, yi) in enumerate(good):
+    num = den = 1
+    for j, (xj, _) in enumerate(good):
+        if i != j:
+            num = num * (-xj) %% prime
+            den = den * (xi - xj) %% prime
+    secret = (secret + yi * num * pow(den, -1, prime)) %% prime
+
+import sealed
+print(sealed.unseal(open("flag.enc", encoding="utf-8").read(),
+                    secret.to_bytes(%d, "big").hex()))
+''' % (32,)
+
+_SKEW_EVENTS = [
+    "link up on bond0", "quorum join accepted", "escrow share loaded",
+    "heartbeat ok", "config epoch advanced", "peer census complete",
+    "ntp step applied", "checkpoint written", "lease renewed",
+    "heartbeat ok", "audit cursor advanced", "link flap cleared",
+]
+
+
+def gen_skewlog(seed, generation, **kw):
+    import hashlib as _h
+    flag_secret = kw.get("flag_secret", "")
+    flag = challenge_flag(kind="skewlog", seed=seed, generation=generation,
+                          secret=flag_secret)
+    rng = random.Random(f"skewlog:{flag_secret}:{seed}:{generation}")
+    good_count = SKEW_NODES - SKEW_BAD
+
+    secret_bytes = bytes(rng.randrange(256) for _ in range(32))
+    secret = int.from_bytes(secret_bytes, "big") % SKEW_PRIME
+    # Threshold == the number of intact nodes, so the intact set must be identified
+    # exactly: one damaged share included, or one sound share dropped, and the
+    # interpolation lands on a different number with nothing to say it is wrong.
+    coeffs = [secret] + [rng.randrange(SKEW_PRIME) for _ in range(good_count - 1)]
+
+    def share(x):
+        value = 0
+        for c in reversed(coeffs):
+            value = (value * x + c) % SKEW_PRIME
+        return value
+
+    tampered = set(rng.sample(range(SKEW_NODES), SKEW_BAD))
+    nodes, flagged = [], []
+    for idx in range(SKEW_NODES):
+        node_id = f"node-{idx:02d}"
+        entries, digest = [], _h.sha256(node_id.encode()).hexdigest()
+        clock = 1755_000_000 + rng.randrange(600)
+        skewed = idx not in tampered          # the intact nodes are the skewed ones
+        for step in range(SKEW_ENTRIES):
+            event = f"{_SKEW_EVENTS[step]} seq={step}"
+            digest = _h.sha256((digest + event).encode()).hexdigest()
+            if skewed and step == SKEW_ENTRIES // 2:
+                clock -= rng.randrange(40, 90)        # a real NTP step backwards
+            else:
+                clock += rng.randrange(1, 14)
+            entries.append({"seq": step, "ts": clock, "event": event, "digest": digest})
+        if skewed:
+            flagged.append(node_id)
+        else:
+            # Edited after the fact, with no successor digest recomputed.
+            hit = rng.randrange(1, SKEW_ENTRIES)
+            entries[hit]["event"] += " [reconciled]"
+        nodes.append({"node_id": node_id, "share_x": idx + 1,
+                      "share_y": str(share(idx + 1)), "entries": entries})
+
+    artifacts = {
+        "logs.json": json.dumps({
+            "prime": str(SKEW_PRIME),
+            "threshold": good_count,
+            "digest_chain": "d0 = sha256(node_id); di = sha256(d(i-1) + event_i)",
+            "collector_note": (
+                "Clock audit: the following nodes reported non-monotonic wall-clock "
+                "across the incident window and are flagged suspect: "
+                + ", ".join(flagged) + "."),
+            "nodes": nodes,
+        }, indent=1) + "\n",
+        "sealed.py": _SEAL_TOOL,
+        "flag.enc": _seal(secret.to_bytes(32, "big").hex(), flag),
+        "README.md": (
+            f"# Escrow quorum logs\n\n"
+            f"Forty nodes each hold one share of the escrow secret and each keep an "
+            f"append-only event log. `logs.json` is the collector's dump of all forty, "
+            f"with the digest-chain rule the logs are written under and the collector's "
+            f"own clock-audit note.\n\n"
+            f"The secret is split so that **{good_count}** shares reconstruct it. Shares "
+            f"and the prime are decimal strings.\n\n"
+            f"The operator's recovery blob is sealed under the reconstructed secret, "
+            f"written as 32 bytes of lowercase hex. `sealed.py` opens it.\n"),
+    }
+    return _spec(
+        slug=_slug("skewlog", flag_secret, seed, generation),
+        title="Escrow Quorum Logs", category="forensics",
+        challenge_type="misleading-triage-signal",
+        story=("Forty nodes each hold one share of an escrow secret and each keep an "
+               "append-only log. The collector dumped all forty along with its own "
+               "audit note about which ones look wrong."),
+        vulnerability=("the audit signal the collector offers is exactly inverted against the "
+                       "digest chain, and the threshold leaves no room to be wrong"),
+        solution=["recompute each log's digest chain from its node id",
+                  "treat a broken chain, not a stepped clock, as the tamper signal",
+                  "note the flagged set is the intact set and the threshold admits no slack",
+                  "Lagrange-interpolate the intact shares at zero and unseal"],
+        artifacts=artifacts,
+        solver_files={"solver.py": _SKEWLOG_SOLVER, "sealed.py": _SEAL_TOOL},
+        flag=flag, seed=seed, generation=generation, attack_class="skewlog",
+        rank=12, max_runtime_s=120, flag_secret=flag_secret)
+
+
+# ---------------------------------------------------------------------------
+# permstego — a payload with no bytes to inspect
+# ---------------------------------------------------------------------------
+PERM_ENTRIES = 96
+PERM_MAGIC = b"EMT1"
+PERM_KEY_BYTES = 32
+
+_PERMSTEGO_SOLVER = '''\
+"""Read a payload that was never written into any byte of the manifest.
+
+Every byte in `manifest.json` is accounted for: the paths are paths, the sizes
+match, the digests are the digests of the recorded sizes. There is no low bit to
+harvest, no trailing slack, no field with a spare nibble. What is not accounted
+for is the ORDER, and the packer's note says so plainly — the loader sorts by
+path and does not care what order it is given, and the run payload was recorded
+in emission order.
+
+An ordering of n distinct items carries log2(n!) bits, and for 96 entries that is
+about 484 — comfortably more than a marker plus a 32-byte payload. The encoding
+that gets them out is the only natural one: number the entries by their position
+in path order, read off how far out of place each one is, and that sequence is
+the digits of an integer in factorial base.
+
+Concretely, for each position i take the count of later entries whose path-order
+index is smaller than this one's; multiply by (n-1-i)! and sum. The result is the
+payload as a big integer, big-endian, marker first.
+"""
+import json
+import math
+
+doc = json.load(open("manifest.json", encoding="utf-8"))
+entries = doc["entries"]
+n = len(entries)
+
+order = {path: i for i, path in enumerate(sorted(e["path"] for e in entries))}
+seq = [order[e["path"]] for e in entries]
+
+value = 0
+for i in range(n):
+    smaller = sum(1 for j in range(i + 1, n) if seq[j] < seq[i])
+    value += smaller * math.factorial(n - 1 - i)
+
+width = (value.bit_length() + 7) // 8
+blob = value.to_bytes(width, "big")
+marker = %r
+assert blob[:len(marker)] == marker, "emission order does not decode to a payload"
+
+import sealed
+print(sealed.unseal(open("flag.enc", encoding="utf-8").read(),
+                    blob[len(marker):].hex()))
+''' % (PERM_MAGIC,)
+
+_PERM_DIRS = ["boot", "etc", "lib", "opt/agent", "usr/share/fw", "var/spool"]
+_PERM_STEMS = ["loader", "table", "policy", "keymap", "profile", "index", "blob",
+               "record", "shim", "trace", "vector", "digest"]
+
+
+def _perm_from_rank(rank, n):
+    """The rank-th permutation of range(n) in factorial base, most significant first."""
+    import math as _m
+    pool = list(range(n))
+    out = []
+    for i in range(n):
+        block = _m.factorial(n - 1 - i)
+        which = rank // block
+        rank -= which * block
+        out.append(pool.pop(which))
+    return out
+
+
+def gen_permstego(seed, generation, **kw):
+    import hashlib as _h
+    flag_secret = kw.get("flag_secret", "")
+    flag = challenge_flag(kind="permstego", seed=seed, generation=generation,
+                          secret=flag_secret)
+    rng = random.Random(f"permstego:{flag_secret}:{seed}:{generation}")
+
+    paths = set()
+    while len(paths) < PERM_ENTRIES:
+        paths.add(f"/{rng.choice(_PERM_DIRS)}/{rng.choice(_PERM_STEMS)}"
+                  f"-{rng.randrange(1000):03d}.bin")
+    ordered = sorted(paths)
+
+    key = bytes(rng.randrange(256) for _ in range(PERM_KEY_BYTES))
+    value = int.from_bytes(PERM_MAGIC + key, "big")
+    perm = _perm_from_rank(value, PERM_ENTRIES)
+
+    entries = []
+    for idx in perm:
+        path = ordered[idx]
+        size = 512 + (int(_h.sha256(path.encode()).hexdigest()[:6], 16) % 60000)
+        entries.append({
+            "path": path, "size": size,
+            "sha256": _h.sha256(f"{path}:{size}".encode()).hexdigest(),
+        })
+
+    artifacts = {
+        "manifest.json": json.dumps({
+            "packer": "emt-pack 2.4",
+            "note": ("entries are listed in emission order; the loader sorts by path "
+                     "and does not depend on the order it is given. The run payload "
+                     "for this image was recorded in that emission order."),
+            "digest_rule": "sha256(path + ':' + size)",
+            "entries": entries,
+        }, indent=1) + "\n",
+        "sealed.py": _SEAL_TOOL,
+        "flag.enc": _seal(key.hex(), flag),
+        "README.md": (
+            "# Firmware image manifest\n\n"
+            f"`manifest.json` is the manifest `emt-pack` wrote for a firmware image: "
+            f"{PERM_ENTRIES} entries, each with its path, its size, and a digest over "
+            "both. Every field checks out against the packer's stated digest rule.\n\n"
+            "The run payload begins with a four-byte marker. The operator's recovery "
+            "blob is sealed under the bytes after that marker, as lowercase hex. "
+            "`sealed.py` opens it.\n"),
+    }
+    return _spec(
+        slug=_slug("permstego", flag_secret, seed, generation),
+        title="Firmware Image Manifest", category="forensics",
+        challenge_type="ordering-as-payload",
+        story=("A packer wrote a manifest for a firmware image. Every field in it is "
+               "consistent with the packer's own digest rule, and the packer notes that "
+               "the loader ignores the order the entries arrive in."),
+        vulnerability=("the payload is carried by the ordering of the records, not by any byte "
+                       "in them, so every byte-level check passes and finds nothing"),
+        solution=["confirm every field is consistent, so no byte carries slack",
+                  "note an ordering of 96 distinct entries carries ~484 bits",
+                  "index the entries by path order and read the displacement digits",
+                  "read those digits as factorial base, big-endian, marker first"],
+        artifacts=artifacts,
+        solver_files={"solver.py": _PERMSTEGO_SOLVER, "sealed.py": _SEAL_TOOL},
+        flag=flag, seed=seed, generation=generation, attack_class="permstego",
+        rank=13, max_runtime_s=120, flag_secret=flag_secret)
+
+
+AIRESISTANT_BUILDERS = [gen_oddproto, gen_vmkeygen, gen_lsbseed, gen_honeytrap,
+                        gen_skewlog, gen_permstego]

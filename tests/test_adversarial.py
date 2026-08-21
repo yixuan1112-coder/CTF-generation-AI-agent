@@ -20,17 +20,21 @@ import unittest
 
 from autoctf_gan.adversarial import ADVERSARIAL_BUILDERS, gen_bandflip, gen_gradgate
 from autoctf_gan.airesistant import (AIRESISTANT_BUILDERS, gen_honeytrap,
-                                     gen_lsbseed, gen_oddproto, gen_vmkeygen)
+                                     gen_lsbseed, gen_oddproto, gen_permstego,
+                                     gen_skewlog, gen_vmkeygen)
+from autoctf_gan.bespoke import BESPOKE_BUILDERS, gen_codebook, gen_cpatrace
 from autoctf_gan.verify import verify_spec
 
-ALL_BUILDERS = ADVERSARIAL_BUILDERS + AIRESISTANT_BUILDERS
+ALL_BUILDERS = ADVERSARIAL_BUILDERS + AIRESISTANT_BUILDERS + BESPOKE_BUILDERS
 
 # Words that would hand over the technique. Each rung's difficulty is that a
 # player has to arrive at one of these on their own.
 _GIVEAWAYS = ("knapsack", "gradient", "descent", "off-by-one", "off by one",
               "bit-revers", "bit revers", "brute force", "brute-force",
               "adversarial", "dead end", "red herring", "decoy", "honeypot",
-              "out of bounds", "out-of-bounds")
+              "out of bounds", "out-of-bounds", "correlation", "correlate",
+              "hamming", "side channel", "side-channel", "shamir", "lagrange",
+              "factorial", "permutation", "lehmer", "interpolat", "tampered")
 
 
 class RungsAreSolvable(unittest.TestCase):
@@ -79,6 +83,10 @@ class TheAnswerIsNotInTheArtifacts(unittest.TestCase):
             (gen_vmkeygen, _vmkeygen_key),
             (gen_lsbseed, _lsbseed_key),
             (gen_honeytrap, _honeytrap_key),
+            (gen_skewlog, _skewlog_key),
+            (gen_permstego, _permstego_key),
+            (gen_cpatrace, _cpatrace_key),
+            (gen_codebook, _codebook_key),
         ]
         for builder, extract in cases:
             spec = builder(seed=404, generation=0, flag_secret="secret-404")
@@ -227,5 +235,72 @@ def _honeytrap_key(spec):
     return bytes(a ^ b for a, b in zip(image[off:off + RECORD_LEN], out)).hex()
 
 
+
+def _skewlog_key(spec):
+    import hashlib
+    import json
+    doc = json.loads(spec.artifacts["logs.json"])
+    prime, threshold = int(doc["prime"]), doc["threshold"]
+    good = []
+    for node in doc["nodes"]:
+        digest = hashlib.sha256(node["node_id"].encode()).hexdigest()
+        for entry in node["entries"]:
+            digest = hashlib.sha256((digest + entry["event"]).encode()).hexdigest()
+            if digest != entry["digest"]:
+                break
+        else:
+            good.append((int(node["share_x"]), int(node["share_y"])))
+    assert len(good) == threshold, f"{len(good)} intact vs threshold {threshold}"
+    secret = 0
+    for i, (xi, yi) in enumerate(good):
+        num = den = 1
+        for j, (xj, _) in enumerate(good):
+            if i != j:
+                num = num * (-xj) % prime
+                den = den * (xi - xj) % prime
+        secret = (secret + yi * num * pow(den, -1, prime)) % prime
+    return secret.to_bytes(32, "big").hex()
+
+
+def _permstego_key(spec):
+    import json
+    import math
+    from autoctf_gan.airesistant import PERM_MAGIC
+    entries = json.loads(spec.artifacts["manifest.json"])["entries"]
+    n = len(entries)
+    order = {path: i for i, path in enumerate(sorted(e["path"] for e in entries))}
+    seq = [order[e["path"]] for e in entries]
+    value = sum(sum(1 for j in range(i + 1, n) if seq[j] < seq[i])
+                * math.factorial(n - 1 - i) for i in range(n))
+    blob = value.to_bytes((value.bit_length() + 7) // 8, "big")
+    assert blob[:len(PERM_MAGIC)] == PERM_MAGIC
+    return blob[len(PERM_MAGIC):].hex()
+
+
+def _cpatrace_key(spec):
+    import json
+    from autoctf_gan.bespoke import _cpa_attack
+    cap = json.loads(spec.artifacts["captures.json"])
+    table = bytes.fromhex(spec.artifacts["sbox.hex"].strip())
+    key, _ = _cpa_attack(table, cap["iv"],
+                         [bytes.fromhex(t["challenge"]) for t in cap["captures"]],
+                         [t["samples"] for t in cap["captures"]])
+    return key.hex()
+
+
+def _codebook_key(spec):
+    import json
+    from autoctf_gan.bespoke import _codebook_survivors, _feistel_encrypt
+    table = bytes.fromhex(spec.artifacts["sbox.hex"].strip())
+    pairs = [(int(p["pt"], 16), int(p["ct"], 16))
+             for p in json.loads(spec.artifacts["pairs.json"])["pairs"]]
+    keys = _codebook_survivors(list(table), pairs, limit=1)[0]
+    lookup = {_feistel_encrypt(table, keys, b): b for b in range(65536)}
+    blob = bytes.fromhex(spec.artifacts["archive.enc"].strip())
+    plain = bytearray()
+    for i in range(0, len(blob), 2):
+        word = lookup[(blob[i] << 8) | blob[i + 1]]
+        plain += bytes([word >> 8, word & 0xFF])
+    return bytes(plain).hex()
 if __name__ == "__main__":
     unittest.main()
