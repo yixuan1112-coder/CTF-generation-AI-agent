@@ -34,10 +34,11 @@ from autoctf_gan.morepico import (MOREPICO_BUILDERS, gen_dnschain, gen_rotkey,
 from autoctf_gan.picostyle import (PICOSTYLE_BUILDERS, gen_mbakeygen,
                                    gen_nestpeel)
 from autoctf_gan.verify import verify_spec
+from autoctf_gan.walls import WALLS_BUILDERS, gen_ecdlpwall, gen_rsawall
 
 ALL_BUILDERS = (ADVERSARIAL_BUILDERS + AIRESISTANT_BUILDERS + BESPOKE_BUILDERS
                 + AGENTBENCH_BUILDERS + PICOSTYLE_BUILDERS + MOREPICO_BUILDERS
-                + HUMANHARD_BUILDERS + HARDTIER_BUILDERS)
+                + HUMANHARD_BUILDERS + HARDTIER_BUILDERS + WALLS_BUILDERS)
 
 # Words that would hand over the technique. Each rung's difficulty is that a
 # player has to arrive at one of these on their own.
@@ -791,6 +792,34 @@ def _mqlin_key(spec):
     key_bits = [sol[col[str(i)]] for i in range(n)]
     return bytes(int("".join(str(b) for b in key_bits[i:i + 8]), 2)
                  for i in range(0, n, 8)).hex()
+
+
+class WallsAreRealAndTrapdoorStaysHidden(unittest.TestCase):
+    """The compute walls verify only through the organizer trapdoor, which — like
+    the flag — must never appear in a player artifact. There is no player-side
+    extractor to test against, because not having one is the point."""
+
+    def test_rsawall_trapdoor_absent_and_modulus_hard(self):
+        import re
+        from autoctf_gan.walls import _rsa_primes_cached
+        spec = gen_rsawall(seed=909, generation=0, flag_secret="secret-909")
+        p, q = _rsa_primes_cached("secret-909", 909, 0, None)
+        n = int(re.search(r"n = (\d+)", spec.artifacts["key.txt"]).group(1))
+        self.assertEqual(n, p * q)
+        self.assertGreaterEqual(n.bit_length(), 2047)          # a real 2048-bit modulus
+        self.assertGreater(abs(p - q).bit_length(), 500)        # far apart -> Fermat-immune
+        for content in spec.artifacts.values():
+            self.assertNotIn(str(min(p, q)), content)           # trapdoor factor never ships
+            self.assertNotIn(spec.flag, content)
+
+    def test_ecdlpwall_trapdoor_absent(self):
+        import random
+        from autoctf_gan.curves import SECP256K1_N
+        spec = gen_ecdlpwall(seed=909, generation=0, flag_secret="secret-909")
+        d = random.Random("ecdlpwall:secret-909:909:0").randrange(1 << 250, SECP256K1_N - 1)
+        for content in spec.artifacts.values():
+            self.assertNotIn(str(d), content)
+            self.assertNotIn(spec.flag, content)
 
 if __name__ == "__main__":
     unittest.main()
