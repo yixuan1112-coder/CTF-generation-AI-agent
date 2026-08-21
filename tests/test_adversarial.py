@@ -25,6 +25,8 @@ from autoctf_gan.airesistant import (AIRESISTANT_BUILDERS, gen_honeytrap,
 from autoctf_gan.agentbench import (AGENTBENCH_BUILDERS, gen_chainlink,
                                     gen_falsestart, gen_toolliar)
 from autoctf_gan.bespoke import BESPOKE_BUILDERS, gen_codebook, gen_cpatrace
+from autoctf_gan.humanhard import (HUMANHARD_BUILDERS, gen_blackbox,
+                                   gen_gridpath, gen_wythoff)
 from autoctf_gan.morepico import (MOREPICO_BUILDERS, gen_dnschain, gen_rotkey,
                                   gen_streamweave)
 from autoctf_gan.picostyle import (PICOSTYLE_BUILDERS, gen_mbakeygen,
@@ -32,7 +34,8 @@ from autoctf_gan.picostyle import (PICOSTYLE_BUILDERS, gen_mbakeygen,
 from autoctf_gan.verify import verify_spec
 
 ALL_BUILDERS = (ADVERSARIAL_BUILDERS + AIRESISTANT_BUILDERS + BESPOKE_BUILDERS
-                + AGENTBENCH_BUILDERS + PICOSTYLE_BUILDERS + MOREPICO_BUILDERS)
+                + AGENTBENCH_BUILDERS + PICOSTYLE_BUILDERS + MOREPICO_BUILDERS
+                + HUMANHARD_BUILDERS)
 
 # Words that would hand over the technique. Each rung's difficulty is that a
 # player has to arrive at one of these on their own.
@@ -45,7 +48,9 @@ _GIVEAWAYS = ("knapsack", "gradient", "descent", "off-by-one", "off by one",
               "polyglot", "planted", "wrong key", "meet in the middle",
               "baby step", "unproductive", "affine", "gf(2)", "xor in disguise",
               "gaussian", "boolean-arithmetic", "linked list", "linked-list",
-              "circular", "follow the chain")
+              "circular", "follow the chain", "wythoff", "golden ratio",
+              "golden-ratio", "fibonacci", "beatty", "1.618", "sqrt(5)",
+              "difference signature")
 
 
 class RungsAreSolvable(unittest.TestCase):
@@ -106,6 +111,9 @@ class TheAnswerIsNotInTheArtifacts(unittest.TestCase):
             (gen_streamweave, _streamweave_key),
             (gen_dnschain, _dnschain_key),
             (gen_rotkey, _rotkey_key),
+            (gen_wythoff, _wythoff_key),
+            (gen_blackbox, _blackbox_key),
+            (gen_gridpath, _gridpath_key),
         ]
         for builder, extract in cases:
             spec = builder(seed=404, generation=0, flag_secret="secret-404")
@@ -538,6 +546,64 @@ def _rotkey_key(spec):
         else:
             raise AssertionError("no rotation matched a record digest")
     return b"".join(out).hex()
+
+
+def _wythoff_key(spec):
+    import json
+    import math
+    positions = json.loads(spec.artifacts["positions.json"])["positions"]
+
+    def losing(a, b):
+        if a > b:
+            a, b = b, a
+        k = b - a
+        return a == (k + math.isqrt(5 * k * k)) // 2
+
+    bits = "".join("0" if losing(p[0], p[1]) else "1" for p in positions)
+    return bytes(int(bits[i:i + 8], 2) for i in range(0, len(bits), 8)).hex()
+
+
+def _blackbox_key(spec):
+    import json
+    doc = json.loads(spec.artifacts["pairs.json"])
+    W = doc["width"]
+    pairs = [(bytes.fromhex(p["in"]), bytes.fromhex(p["out"])) for p in doc["pairs"]]
+    target = bytes.fromhex(doc["target_out"])
+    in0, out0 = pairs[0]
+    in_sig = [bytes(pairs[p][0][c] ^ in0[c] for p in range(1, len(pairs))) for c in range(W)]
+    out_sig = [bytes(pairs[p][1][c] ^ out0[c] for p in range(1, len(pairs))) for c in range(W)]
+    perm = [next(c for c in range(W) if out_sig[i] == in_sig[c]) for i in range(W)]
+    mask = [out0[i] ^ in0[perm[i]] for i in range(W)]
+    key = bytearray(W)
+    for i in range(W):
+        key[perm[i]] = target[i] ^ mask[i]
+    return bytes(key).hex()
+
+
+def _gridpath_key(spec):
+    import json
+    doc = json.loads(spec.artifacts["grid.json"])
+    H, W, flat = doc["height"], doc["width"], doc["readings"]
+    cells = [flat[r * W:(r + 1) * W] for r in range(H)]
+
+    def lit(r, c):
+        return 0 <= r < H and 0 <= c < W and cells[r][c] >= 0xA0
+
+    start = next((r, c) for r in range(H) for c in range(W) if cells[r][c] == 0xFF)
+    nibbles, prev, cur = [], None, start
+    while True:
+        nxt = None
+        for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+            nr, nc = cur[0] + dr, cur[1] + dc
+            if lit(nr, nc) and (nr, nc) != prev:
+                nxt = (nr, nc)
+                break
+        if nxt is None:
+            break
+        nibbles.append(cells[nxt[0]][nxt[1]] & 0x0F)
+        prev, cur = cur, nxt
+    return bytes((nibbles[i] << 4) | nibbles[i + 1]
+                 for i in range(0, len(nibbles), 2)).hex()
 
 if __name__ == "__main__":
     unittest.main()
