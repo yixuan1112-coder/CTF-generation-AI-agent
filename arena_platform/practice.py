@@ -153,6 +153,9 @@ def practice_specs(secret: str, cache_dir=None):
     # `realvuln` is genuine software-security bugs (length extension, CBC
     # malleability) made hard by bespoke primitives that defeat the standard tool.
     from autoctf_gan.realvuln import REALVULN_BUILDERS
+    # `signals` decodes physical-layer captures (an OOK/Manchester beacon, BLE
+    # whitening) — modelled on the signal-decode cases an agent eval found hard.
+    from autoctf_gan.signals import SIGNALS_BUILDERS
     # `walls` is the terminal tier: genuine unbroken hard problems (factoring,
     # ECDLP) verified by an organizer trapdoor. Nobody solves these — that is the
     # honest end of "make it harder". They join `dlogwall` above.
@@ -160,7 +163,7 @@ def practice_specs(secret: str, cache_dir=None):
     for builder in (ADVERSARIAL_BUILDERS + AIRESISTANT_BUILDERS + BESPOKE_BUILDERS
                     + AGENTBENCH_BUILDERS + PICOSTYLE_BUILDERS + MOREPICO_BUILDERS
                     + HUMANHARD_BUILDERS + HARDTIER_BUILDERS + COMPOSITE_BUILDERS
-                    + REALVULN_BUILDERS + WALLS_BUILDERS):
+                    + REALVULN_BUILDERS + SIGNALS_BUILDERS + WALLS_BUILDERS):
         try:
             specs.append(builder(seed=PRACTICE_SEED, generation=0, flag_secret=secret))
         except Exception as exc:
@@ -172,7 +175,7 @@ def practice_specs(secret: str, cache_dir=None):
 # generator altered). A boot whose stored version already matches skips the whole
 # rebuild — otherwise every restart pays ~15s to re-derive 20 specs (safe primes,
 # deep RSA chains) only to dedup them away. A version bump forces one rebuild.
-CATALOGUE_VERSION = 15
+CATALOGUE_VERSION = 16
 
 
 def seed_practice(store) -> int:

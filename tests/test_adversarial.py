@@ -35,13 +35,14 @@ from autoctf_gan.morepico import (MOREPICO_BUILDERS, gen_dnschain, gen_rotkey,
 from autoctf_gan.picostyle import (PICOSTYLE_BUILDERS, gen_mbakeygen,
                                    gen_nestpeel)
 from autoctf_gan.realvuln import REALVULN_BUILDERS, gen_cbcflip, gen_lenext
+from autoctf_gan.signals import SIGNALS_BUILDERS
 from autoctf_gan.verify import verify_spec
 from autoctf_gan.walls import WALLS_BUILDERS, gen_ecdlpwall, gen_rsawall
 
 ALL_BUILDERS = (ADVERSARIAL_BUILDERS + AIRESISTANT_BUILDERS + BESPOKE_BUILDERS
                 + AGENTBENCH_BUILDERS + PICOSTYLE_BUILDERS + MOREPICO_BUILDERS
                 + HUMANHARD_BUILDERS + HARDTIER_BUILDERS + COMPOSITE_BUILDERS
-                + REALVULN_BUILDERS + WALLS_BUILDERS)
+                + REALVULN_BUILDERS + SIGNALS_BUILDERS + WALLS_BUILDERS)
 
 # Words that would hand over the technique. Each rung's difficulty is that a
 # player has to arrive at one of these on their own.
