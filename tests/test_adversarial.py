@@ -34,13 +34,14 @@ from autoctf_gan.morepico import (MOREPICO_BUILDERS, gen_dnschain, gen_rotkey,
                                   gen_streamweave)
 from autoctf_gan.picostyle import (PICOSTYLE_BUILDERS, gen_mbakeygen,
                                    gen_nestpeel)
+from autoctf_gan.realvuln import REALVULN_BUILDERS, gen_cbcflip, gen_lenext
 from autoctf_gan.verify import verify_spec
 from autoctf_gan.walls import WALLS_BUILDERS, gen_ecdlpwall, gen_rsawall
 
 ALL_BUILDERS = (ADVERSARIAL_BUILDERS + AIRESISTANT_BUILDERS + BESPOKE_BUILDERS
                 + AGENTBENCH_BUILDERS + PICOSTYLE_BUILDERS + MOREPICO_BUILDERS
                 + HUMANHARD_BUILDERS + HARDTIER_BUILDERS + COMPOSITE_BUILDERS
-                + WALLS_BUILDERS)
+                + REALVULN_BUILDERS + WALLS_BUILDERS)
 
 # Words that would hand over the technique. Each rung's difficulty is that a
 # player has to arrive at one of these on their own.
@@ -57,7 +58,9 @@ _GIVEAWAYS = ("knapsack", "gradient", "descent", "off-by-one", "off by one",
               "golden-ratio", "fibonacci", "beatty", "1.618", "sqrt(5)",
               "difference signature", "berlekamp", "welch", "reed-solomon",
               "error locator", "error-locator", "pohlig", "monomial",
-              "linearise", "linearize", "reused", "cancel the blind", "subtract")
+              "linearise", "linearize", "reused", "cancel the blind", "subtract",
+              "length extension", "length-extension", "malleable", "bit-flip",
+              "hashpump")
 
 
 class RungsAreSolvable(unittest.TestCase):
@@ -125,6 +128,8 @@ class TheAnswerIsNotInTheArtifacts(unittest.TestCase):
             (gen_phsmooth, _phsmooth_key),
             (gen_mqlin, _mqlin_key),
             (gen_cascade, _cascade_key),
+            (gen_lenext, _lenext_key),
+            (gen_cbcflip, _cbcflip_key),
         ]
         for builder, extract in cases:
             spec = builder(seed=404, generation=0, flag_secret="secret-404")
@@ -838,6 +843,42 @@ def _cascade_key(spec):
         out += hashlib.sha256(f"cascade-ks:{k}:{counter}".encode()).digest()
         counter += 1
     return bytes(a ^ b for a, b in zip(blob, out)).decode()
+
+
+def _lenext_key(spec):
+    import json
+    ns = {}
+    exec(spec.artifacts["authhash.py"], ns)
+    doc = json.loads(spec.artifacts["token.json"])
+    msg = doc["message"].encode()
+    mac = int(doc["mac"], 16)
+    slen = doc["secret_len"]
+    ext = doc["extension"].encode()
+    glue = ns["pad"](slen + len(msg))
+    data = ext + ns["pad"](slen + len(msg) + len(glue) + len(ext))
+    st = mac
+    for i in range(0, len(data), ns["B"]):
+        st = ns["compress"](st, data[i:i + ns["B"]])
+    return f"{st:016x}"
+
+
+def _cbcflip_key(spec):
+    import json
+    doc = json.loads(spec.artifacts["token.json"])
+    B = doc["block_size"]
+    iv = bytes.fromhex(doc["iv"])
+    ct = bytes.fromhex(doc["ciphertext"])
+    blocks = [ct[i:i + B] for i in range(0, len(ct), B)]
+    known = doc["plaintext_template"].encode("latin-1")
+    target = doc["target_plaintext"].encode("latin-1")
+    rb = doc["role_block_index"]
+    delta = bytes(a ^ b for a, b in zip(known[rb * B:(rb + 1) * B],
+                                        target[rb * B:(rb + 1) * B]))
+    chain = [iv] + blocks
+    prev = bytes(a ^ b for a, b in zip(chain[rb], delta))
+    fb = blocks[:]
+    fb[rb - 1] = prev
+    return (iv + b"".join(fb)).hex()
 
 if __name__ == "__main__":
     unittest.main()
