@@ -129,10 +129,15 @@ def practice_specs(secret: str, cache_dir=None):
     # `bespoke` is a third of the same kind: the device's own source ships, so the
     # algorithm is knowable and the key still is not, and neither construction has
     # a published attack script to bind to.
+    # `agentbench` is built against failure modes that agent benchmarks measured
+    # rather than ones we reasoned about — see that module's docstring for which
+    # finding each rung targets.
     from autoctf_gan.adversarial import ADVERSARIAL_BUILDERS
+    from autoctf_gan.agentbench import AGENTBENCH_BUILDERS
     from autoctf_gan.airesistant import AIRESISTANT_BUILDERS
     from autoctf_gan.bespoke import BESPOKE_BUILDERS
-    for builder in ADVERSARIAL_BUILDERS + AIRESISTANT_BUILDERS + BESPOKE_BUILDERS:
+    for builder in (ADVERSARIAL_BUILDERS + AIRESISTANT_BUILDERS + BESPOKE_BUILDERS
+                    + AGENTBENCH_BUILDERS):
         try:
             specs.append(builder(seed=PRACTICE_SEED, generation=0, flag_secret=secret))
         except Exception as exc:
@@ -144,7 +149,7 @@ def practice_specs(secret: str, cache_dir=None):
 # generator altered). A boot whose stored version already matches skips the whole
 # rebuild — otherwise every restart pays ~15s to re-derive 20 specs (safe primes,
 # deep RSA chains) only to dedup them away. A version bump forces one rebuild.
-CATALOGUE_VERSION = 7
+CATALOGUE_VERSION = 8
 
 
 def seed_practice(store) -> int:

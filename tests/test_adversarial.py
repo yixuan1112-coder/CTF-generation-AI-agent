@@ -22,10 +22,13 @@ from autoctf_gan.adversarial import ADVERSARIAL_BUILDERS, gen_bandflip, gen_grad
 from autoctf_gan.airesistant import (AIRESISTANT_BUILDERS, gen_honeytrap,
                                      gen_lsbseed, gen_oddproto, gen_permstego,
                                      gen_skewlog, gen_vmkeygen)
+from autoctf_gan.agentbench import (AGENTBENCH_BUILDERS, gen_chainlink,
+                                    gen_falsestart, gen_toolliar)
 from autoctf_gan.bespoke import BESPOKE_BUILDERS, gen_codebook, gen_cpatrace
 from autoctf_gan.verify import verify_spec
 
-ALL_BUILDERS = ADVERSARIAL_BUILDERS + AIRESISTANT_BUILDERS + BESPOKE_BUILDERS
+ALL_BUILDERS = (ADVERSARIAL_BUILDERS + AIRESISTANT_BUILDERS + BESPOKE_BUILDERS
+                + AGENTBENCH_BUILDERS)
 
 # Words that would hand over the technique. Each rung's difficulty is that a
 # player has to arrive at one of these on their own.
@@ -34,7 +37,9 @@ _GIVEAWAYS = ("knapsack", "gradient", "descent", "off-by-one", "off by one",
               "adversarial", "dead end", "red herring", "decoy", "honeypot",
               "out of bounds", "out-of-bounds", "correlation", "correlate",
               "hamming", "side channel", "side-channel", "shamir", "lagrange",
-              "factorial", "permutation", "lehmer", "interpolat", "tampered")
+              "factorial", "permutation", "lehmer", "interpolat", "tampered",
+              "polyglot", "planted", "wrong key", "meet in the middle",
+              "baby step", "unproductive")
 
 
 class RungsAreSolvable(unittest.TestCase):
@@ -87,6 +92,9 @@ class TheAnswerIsNotInTheArtifacts(unittest.TestCase):
             (gen_permstego, _permstego_key),
             (gen_cpatrace, _cpatrace_key),
             (gen_codebook, _codebook_key),
+            (gen_falsestart, _falsestart_key),
+            (gen_toolliar, _toolliar_key),
+            (gen_chainlink, _chainlink_key),
         ]
         for builder, extract in cases:
             spec = builder(seed=404, generation=0, flag_secret="secret-404")
@@ -302,5 +310,111 @@ def _codebook_key(spec):
         word = lookup[(blob[i] << 8) | blob[i + 1]]
         plain += bytes([word >> 8, word & 0xFF])
     return bytes(plain).hex()
+
+def _falsestart_key(spec):
+    import hashlib
+    import json
+    doc = json.loads(spec.artifacts["archive.json"])
+    pads = [bytes.fromhex(p) for p in json.loads(spec.artifacts["keyring.json"])["pads"]]
+    out = []
+    for record in doc["records"]:
+        data = bytes.fromhex(record["data"])
+        for pad in pads:
+            plain = bytes(a ^ b for a, b in zip(data, pad))
+            if hashlib.sha256(plain).hexdigest() == record["digest"]:
+                out.append(plain)
+                break
+        else:
+            raise AssertionError(f"record {record['seq']} has no matching pad")
+    return b"".join(out).hex()
+
+
+def _toolliar_key(spec):
+    import base64
+    import zlib
+    blob = base64.b64decode("".join(spec.artifacts["container.b64"].split()))
+    frags, pos = {}, 8
+    while pos + 8 <= len(blob):
+        length = int.from_bytes(blob[pos:pos + 4], "big")
+        ctype = blob[pos + 4:pos + 8]
+        data = blob[pos + 8:pos + 8 + length]
+        stored = blob[pos + 8 + length:pos + 12 + length]
+        if len(stored) < 4:
+            break
+        if ctype == b"prVt" and (zlib.crc32(ctype + data) & 0xFFFFFFFF
+                                 == int.from_bytes(stored, "big")):
+            frags[data[0]] = data[1:]
+        pos += 12 + length
+        if ctype == b"IEND":
+            break
+    return zlib.decompress(b"".join(frags[i] for i in sorted(frags))).hex()
+
+
+def _chainlink_key(spec):
+    """Walk all five stages. Slower than replaying the generator, and the point:
+    it re-proves that each stage's answer is the only way into the next."""
+    import base64
+    import json
+    import math
+    import zlib
+
+    def unseal(blob_hex, secret):
+        import hashlib
+        raw = bytes.fromhex(blob_hex.strip())
+        out, counter = bytearray(), 0
+        while len(out) < len(raw):
+            out += hashlib.sha256(secret.encode() + b"|" + str(counter).encode()).digest()
+            counter += 1
+        plain = bytes(a ^ b for a, b in zip(raw, out))
+        assert plain.startswith(b"AUTOCTF-HC\x00"), "wrong secret"
+        return plain[len(b"AUTOCTF-HC\x00"):].decode()
+
+    raw = base64.b64decode("".join(spec.artifacts["recovered.b64"].split()))
+    engine = zlib.decompressobj()
+    engine.decompress(raw)
+    a1 = engine.unused_data.hex()
+
+    stage2 = json.loads(unseal(spec.artifacts["stage2.sealed"], a1))
+    inv7 = pow(7, -1, 256)
+    state = json.loads(stage2["params.json"])["k"]
+    plain = bytearray()
+    for v in bytes.fromhex(stage2["target.hex"].strip()):
+        u = ((v >> 5) | (v << 3)) & 0xFF
+        plain.append((((u - 13) * inv7) & 0xFF) ^ state)
+        state = (state + v) & 0xFF
+    a2 = bytes(plain).hex()
+
+    stage3 = json.loads(unseal(stage2["stage3.sealed"], a2))
+    cipher = bytes.fromhex(stage3["memo.hex"].strip())
+    crib = json.loads(stage3["params.json"])["opens_with"].encode()
+    stream = bytes(a ^ b for a, b in zip(cipher, crib))
+    period = next(n for n in range(1, len(crib))
+                  if all(stream[i] == stream[i % n] for i in range(len(stream))))
+    memo = bytes(c ^ stream[i % period] for i, c in enumerate(cipher)).decode()
+    a3 = memo.rsplit("RELEASE TOKEN: ", 1)[1].split()[0]
+
+    stage4 = json.loads(unseal(stage3["stage4.sealed"], a3))
+    doc = json.loads(stage4["outputs.json"])
+    p = int(doc["modulus"])
+    xs = [int(v) for v in doc["outputs"]]
+    mult = (xs[2] - xs[1]) * pow(xs[1] - xs[0], -1, p) % p
+    incr = (xs[1] - mult * xs[0]) % p
+    a4 = "%x" % ((xs[0] - incr) * pow(mult, -1, p) % p)
+
+    stage5 = json.loads(unseal(stage4["stage5.sealed"], a4))
+    dh = json.loads(stage5["exchange.json"])
+    p, g, h = int(dh["p"]), int(dh["g"]), int(dh["h"])
+    m = math.isqrt(p - 1) + 1
+    table, cur = {}, 1
+    for j in range(m):
+        table.setdefault(cur, j)
+        cur = cur * g % p
+    factor, cur = pow(pow(g, m, p), -1, p), h
+    for i in range(m + 1):
+        if cur in table:
+            return "%x" % (i * m + table[cur])
+        cur = cur * factor % p
+    raise AssertionError("no discrete log found")
+
 if __name__ == "__main__":
     unittest.main()
