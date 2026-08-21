@@ -25,6 +25,8 @@ from autoctf_gan.airesistant import (AIRESISTANT_BUILDERS, gen_honeytrap,
 from autoctf_gan.agentbench import (AGENTBENCH_BUILDERS, gen_chainlink,
                                     gen_falsestart, gen_toolliar)
 from autoctf_gan.bespoke import BESPOKE_BUILDERS, gen_codebook, gen_cpatrace
+from autoctf_gan.hardtier import (HARDTIER_BUILDERS, gen_mqlin, gen_phsmooth,
+                                  gen_rswelch)
 from autoctf_gan.humanhard import (HUMANHARD_BUILDERS, gen_blackbox,
                                    gen_gridpath, gen_wythoff)
 from autoctf_gan.morepico import (MOREPICO_BUILDERS, gen_dnschain, gen_rotkey,
@@ -35,7 +37,7 @@ from autoctf_gan.verify import verify_spec
 
 ALL_BUILDERS = (ADVERSARIAL_BUILDERS + AIRESISTANT_BUILDERS + BESPOKE_BUILDERS
                 + AGENTBENCH_BUILDERS + PICOSTYLE_BUILDERS + MOREPICO_BUILDERS
-                + HUMANHARD_BUILDERS)
+                + HUMANHARD_BUILDERS + HARDTIER_BUILDERS)
 
 # Words that would hand over the technique. Each rung's difficulty is that a
 # player has to arrive at one of these on their own.
@@ -46,11 +48,13 @@ _GIVEAWAYS = ("knapsack", "gradient", "descent", "off-by-one", "off by one",
               "hamming", "side channel", "side-channel", "shamir", "lagrange",
               "factorial", "permutation", "lehmer", "interpolat", "tampered",
               "polyglot", "planted", "wrong key", "meet in the middle",
-              "baby step", "unproductive", "affine", "gf(2)", "xor in disguise",
+              "baby step", "unproductive", "affine", "xor in disguise",
               "gaussian", "boolean-arithmetic", "linked list", "linked-list",
               "circular", "follow the chain", "wythoff", "golden ratio",
               "golden-ratio", "fibonacci", "beatty", "1.618", "sqrt(5)",
-              "difference signature")
+              "difference signature", "berlekamp", "welch", "reed-solomon",
+              "error locator", "error-locator", "pohlig", "monomial",
+              "linearise", "linearize")
 
 
 class RungsAreSolvable(unittest.TestCase):
@@ -114,6 +118,9 @@ class TheAnswerIsNotInTheArtifacts(unittest.TestCase):
             (gen_wythoff, _wythoff_key),
             (gen_blackbox, _blackbox_key),
             (gen_gridpath, _gridpath_key),
+            (gen_rswelch, _rswelch_key),
+            (gen_phsmooth, _phsmooth_key),
+            (gen_mqlin, _mqlin_key),
         ]
         for builder, extract in cases:
             spec = builder(seed=404, generation=0, flag_secret="secret-404")
@@ -604,6 +611,186 @@ def _gridpath_key(spec):
         prev, cur = cur, nxt
     return bytes((nibbles[i] << 4) | nibbles[i + 1]
                  for i in range(0, len(nibbles), 2)).hex()
+
+
+def _rswelch_key(spec):
+    import json
+    doc = json.loads(spec.artifacts["samples.json"])
+    p, deg, e = doc["prime"], doc["degree"], doc["errors"]
+    pts = [(int(v["x"]), int(v["y"])) for v in doc["samples"]]
+    nq = deg + e + 1
+    ncols = nq + e
+    rows = []
+    for x, y in pts:
+        row = [0] * (ncols + 1)
+        xp = 1
+        for j in range(nq):
+            row[j] = xp
+            xp = xp * x % p
+        xp = 1
+        for i in range(e):
+            row[nq + i] = (-y * xp) % p
+            xp = xp * x % p
+        row[ncols] = (y * pow(x, e, p)) % p
+        rows.append(row)
+    R = [r[:] for r in rows]
+    where = [-1] * ncols
+    r = 0
+    for col in range(ncols):
+        sel = next((i for i in range(r, len(R)) if R[i][col] % p), None)
+        if sel is None:
+            continue
+        R[r], R[sel] = R[sel], R[r]
+        inv = pow(R[r][col], -1, p)
+        R[r] = [(v * inv) % p for v in R[r]]
+        for i in range(len(R)):
+            if i != r and R[i][col] % p:
+                f = R[i][col]
+                R[i] = [(a - f * b) % p for a, b in zip(R[i], R[r])]
+        where[col] = r
+        r += 1
+    sol = [R[where[c]][ncols] if where[c] != -1 else 0 for c in range(ncols)]
+    Q, E = sol[:nq], sol[nq:] + [1]
+    num = Q[:]
+    dd = len(E) - 1
+    dinv = pow(E[-1], -1, p)
+    quot = [0] * max(1, len(num) - dd)
+    for i in range(len(num) - 1, dd - 1, -1):
+        c = (num[i] * dinv) % p
+        quot[i - dd] = c
+        for j in range(dd + 1):
+            num[i - dd + j] = (num[i - dd + j] - c * E[j]) % p
+    f = (quot + [0] * (deg + 1))[:deg + 1]
+    return "".join(f"{c:016x}" for c in f)
+
+
+def _phsmooth_key(spec):
+    import json
+    from math import gcd, isqrt
+    doc = json.loads(spec.artifacts["exchange.json"])
+    p, g, h = int(doc["p"]), int(doc["g"]), int(doc["h"])
+
+    def is_prime(n):
+        if n < 2:
+            return False
+        for q in (2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37):
+            if n % q == 0:
+                return n == q
+        d, r = n - 1, 0
+        while d % 2 == 0:
+            d //= 2
+            r += 1
+        for a in (2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37):
+            x = pow(a, d, n)
+            if x in (1, n - 1):
+                continue
+            for _ in range(r - 1):
+                x = x * x % n
+                if x == n - 1:
+                    break
+            else:
+                return False
+        return True
+
+    def rho(n):
+        if n % 2 == 0:
+            return 2
+        c = 1
+        while True:
+            x = y = 2
+            d = 1
+            while d == 1:
+                x = (x * x + c) % n
+                y = (y * y + c) % n
+                y = (y * y + c) % n
+                d = gcd(abs(x - y), n)
+            if d != n:
+                return d
+            c += 1
+
+    def factor(n):
+        fac, stack = {}, [n]
+        while stack:
+            m = stack.pop()
+            if m == 1:
+                continue
+            if is_prime(m):
+                fac[m] = fac.get(m, 0) + 1
+                continue
+            d = rho(m)
+            stack += [d, m // d]
+        return fac
+
+    def bsgs(base, target, mod, order):
+        m = isqrt(order) + 1
+        table, e = {}, 1
+        for j in range(m):
+            table.setdefault(e, j)
+            e = e * base % mod
+        step = pow(pow(base, m, mod), -1, mod)
+        cur = target
+        for i in range(m + 1):
+            if cur in table:
+                return i * m + table[cur]
+            cur = cur * step % mod
+        raise AssertionError("no log")
+
+    order = p - 1
+    res, mod = [], []
+    for q, a in factor(order).items():
+        pe = q ** a
+        res.append(bsgs(pow(g, order // pe, p), pow(h, order // pe, p), p, pe) % pe)
+        mod.append(pe)
+    M = 1
+    for m in mod:
+        M *= m
+    x = 0
+    for r, m in zip(res, mod):
+        Mi = M // m
+        x = (x + r * Mi * pow(Mi, -1, m)) % M
+    return f"{x:x}"
+
+
+def _mqlin_key(spec):
+    import json
+    doc = json.loads(spec.artifacts["system.json"])
+    n = doc["vars"]
+    col = {}
+
+    def column(mono):
+        if mono not in col:
+            col[mono] = len(col)
+        return col[mono]
+
+    parsed = []
+    for eq in doc["equations"]:
+        bits = set()
+        for mono in eq["m"]:
+            bits ^= {column(mono)}
+        parsed.append((bits, eq["r"]))
+    ncols = len(col)
+    rows = []
+    for bits, rhs in parsed:
+        word = 0
+        for c in bits:
+            word |= 1 << c
+        rows.append(word | (rhs << ncols))
+    where = [-1] * ncols
+    r = 0
+    for c in range(ncols):
+        sel = next((i for i in range(r, len(rows)) if (rows[i] >> c) & 1), None)
+        if sel is None:
+            continue
+        rows[r], rows[sel] = rows[sel], rows[r]
+        for i in range(len(rows)):
+            if i != r and (rows[i] >> c) & 1:
+                rows[i] ^= rows[r]
+        where[c] = r
+        r += 1
+    sol = [((rows[where[c]] >> ncols) & 1) if where[c] != -1 else 0 for c in range(ncols)]
+    key_bits = [sol[col[str(i)]] for i in range(n)]
+    return bytes(int("".join(str(b) for b in key_bits[i:i + 8]), 2)
+                 for i in range(0, n, 8)).hex()
 
 if __name__ == "__main__":
     unittest.main()
