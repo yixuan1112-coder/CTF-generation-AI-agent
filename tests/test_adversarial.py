@@ -26,6 +26,7 @@ from autoctf_gan.agentbench import (AGENTBENCH_BUILDERS, gen_chainlink,
                                     gen_falsestart, gen_toolliar)
 from autoctf_gan.bespoke import BESPOKE_BUILDERS, gen_codebook, gen_cpatrace
 from autoctf_gan.composite import COMPOSITE_BUILDERS, gen_cascade, gen_triad
+from autoctf_gan.evalhard import EVALHARD_BUILDERS, gen_cgmdecode, gen_fwscope
 from autoctf_gan.harder import (HARDER_BUILDERS, gen_crosskey, gen_filtergen,
                                 gen_hmacpollute)
 from autoctf_gan.hardtier import (HARDTIER_BUILDERS, gen_mqlin, gen_phsmooth,
@@ -45,7 +46,7 @@ ALL_BUILDERS = (ADVERSARIAL_BUILDERS + AIRESISTANT_BUILDERS + BESPOKE_BUILDERS
                 + AGENTBENCH_BUILDERS + PICOSTYLE_BUILDERS + MOREPICO_BUILDERS
                 + HUMANHARD_BUILDERS + HARDTIER_BUILDERS + COMPOSITE_BUILDERS
                 + REALVULN_BUILDERS + SIGNALS_BUILDERS + HARDER_BUILDERS
-                + WALLS_BUILDERS)
+                + EVALHARD_BUILDERS + WALLS_BUILDERS)
 
 # Words that would hand over the technique. Each rung's difficulty is that a
 # player has to arrive at one of these on their own.
@@ -64,7 +65,8 @@ _GIVEAWAYS = ("knapsack", "gradient", "descent", "off-by-one", "off by one",
               "error locator", "error-locator", "pohlig", "monomial",
               "linearise", "linearize", "reused", "cancel the blind", "subtract",
               "length extension", "length-extension", "malleable", "bit-flip",
-              "hashpump", "berlekamp", "massey", "last write", "last-value")
+              "hashpump", "berlekamp", "massey", "last write", "last-value",
+              "signing scope", "signing-scope", "unauthenticated header")
 
 
 class RungsAreSolvable(unittest.TestCase):
@@ -135,6 +137,8 @@ class TheAnswerIsNotInTheArtifacts(unittest.TestCase):
             (gen_lenext, _lenext_key),
             (gen_cbcflip, _cbcflip_key),
             (gen_hmacpollute, _hmacpollute_key),
+            (gen_fwscope, _fwscope_key),
+            (gen_cgmdecode, _cgmdecode_key),
         ]
         for builder, extract in cases:
             spec = builder(seed=404, generation=0, flag_secret="secret-404")
@@ -901,6 +905,46 @@ def _hmacpollute_key(spec):
     for i in range(0, len(data), ns["B"]):
         st = ns["compress"](st, data[i:i + ns["B"]])
     return f"{st:016x}"
+
+
+def _fwscope_key(spec):
+    import struct
+    image = bytes.fromhex(spec.artifacts["firmware.hex"].strip())
+    v, r, eo, bo, bl = struct.unpack("<HHIII", image[4:20])
+    prefix = image[:bo + bl + 32]
+    payload = b"PAYLOAD\x00" + b"\x00" * 8
+    new_header = struct.pack("<HHIII", v, r, len(prefix), bo, bl)
+    forged = image[:4] + new_header + image[20:bo + bl + 32] + payload
+    return forged.hex()
+
+
+def _cgmdecode_key(spec):
+    import json
+
+    def crc8(data):
+        crc = 0
+        for byte in data:
+            crc ^= byte
+            for _ in range(8):
+                crc = ((crc << 1) ^ 0x07) & 0xFF if crc & 0x80 else (crc << 1) & 0xFF
+        return crc
+
+    records = [bytes.fromhex(r) for r in json.loads(spec.artifacts["capture.json"])["records"]]
+    for seed in range(256):
+        ks, s2 = [], seed & 0xFF
+        for _ in range(len(records) * 2):
+            s2 = (s2 * 0x6D + 0x3B) & 0xFF
+            ks.append(s2)
+        ok, msg = True, bytearray()
+        for i, rec in enumerate(records):
+            val = bytes([rec[1] ^ ks[2 * i], rec[2] ^ ks[2 * i + 1]])
+            if crc8(bytes([rec[0]]) + val) != rec[3]:
+                ok = False
+                break
+            msg.append(val[0])
+        if ok:
+            return bytes(msg).rstrip(b"\x00").hex()
+    raise AssertionError("no whitening seed checks")
 
 if __name__ == "__main__":
     unittest.main()
