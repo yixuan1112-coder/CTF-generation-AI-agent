@@ -25,12 +25,14 @@ from autoctf_gan.airesistant import (AIRESISTANT_BUILDERS, gen_honeytrap,
 from autoctf_gan.agentbench import (AGENTBENCH_BUILDERS, gen_chainlink,
                                     gen_falsestart, gen_toolliar)
 from autoctf_gan.bespoke import BESPOKE_BUILDERS, gen_codebook, gen_cpatrace
+from autoctf_gan.morepico import (MOREPICO_BUILDERS, gen_dnschain, gen_rotkey,
+                                  gen_streamweave)
 from autoctf_gan.picostyle import (PICOSTYLE_BUILDERS, gen_mbakeygen,
                                    gen_nestpeel)
 from autoctf_gan.verify import verify_spec
 
 ALL_BUILDERS = (ADVERSARIAL_BUILDERS + AIRESISTANT_BUILDERS + BESPOKE_BUILDERS
-                + AGENTBENCH_BUILDERS + PICOSTYLE_BUILDERS)
+                + AGENTBENCH_BUILDERS + PICOSTYLE_BUILDERS + MOREPICO_BUILDERS)
 
 # Words that would hand over the technique. Each rung's difficulty is that a
 # player has to arrive at one of these on their own.
@@ -42,7 +44,8 @@ _GIVEAWAYS = ("knapsack", "gradient", "descent", "off-by-one", "off by one",
               "factorial", "permutation", "lehmer", "interpolat", "tampered",
               "polyglot", "planted", "wrong key", "meet in the middle",
               "baby step", "unproductive", "affine", "gf(2)", "xor in disguise",
-              "gaussian", "boolean-arithmetic")
+              "gaussian", "boolean-arithmetic", "linked list", "linked-list",
+              "circular", "follow the chain")
 
 
 class RungsAreSolvable(unittest.TestCase):
@@ -100,6 +103,9 @@ class TheAnswerIsNotInTheArtifacts(unittest.TestCase):
             (gen_chainlink, _chainlink_key),
             (gen_nestpeel, _nestpeel_key),
             (gen_mbakeygen, _mbakeygen_key),
+            (gen_streamweave, _streamweave_key),
+            (gen_dnschain, _dnschain_key),
+            (gen_rotkey, _rotkey_key),
         ]
         for builder, extract in cases:
             spec = builder(seed=404, generation=0, flag_secret="secret-404")
@@ -482,6 +488,56 @@ def _mbakeygen_key(spec):
         pr += 1
     key_int = sum((1 << col) for col, r in pc.items() if rows[r][1])
     return key_int.to_bytes(MBA_BITS // 8, "big").hex()
+
+
+def _streamweave_key(spec):
+    import json
+    import zlib
+    doc = json.loads(spec.artifacts["capture.json"])
+    base, count = doc["base_seq"], doc["frag_count"]
+    good = {}
+    for frag in doc["fragments"]:
+        data = bytes.fromhex(frag["data"])
+        if zlib.crc32(data) & 0xFFFFFFFF == frag["crc"]:
+            good.setdefault(frag["seq"], data)
+    return b"".join(good[(base + k) & 0xFFFF] for k in range(count)).hex()
+
+
+def _dnschain_key(spec):
+    import json
+    doc = json.loads(spec.artifacts["querylog.json"])
+    alphabet = doc["b32_alphabet"]
+    by_id = {q["txid"]: q for q in doc["queries"]}
+    labels, cur = [], doc["head"]
+    while cur != 0:
+        labels.append(by_id[cur]["label"])
+        cur = by_id[cur]["next"]
+    val = {c: i for i, c in enumerate(alphabet)}
+    bits = "".join(f"{val[c]:05b}" for c in "".join(labels))
+    return bytes(int(bits[i:i + 8], 2)
+                 for i in range(0, len(bits) - len(bits) % 8, 8)).hex()
+
+
+def _rotkey_key(spec):
+    import hashlib
+    import json
+    doc = json.loads(spec.artifacts["records.json"])
+    crib = doc["record0_opens_with"].encode()
+    L = len(crib)
+    records = [bytes.fromhex(r["data"]) for r in doc["records"]]
+    digests = [r["sha256"] for r in doc["records"]]
+    key = bytes(records[0][i] ^ crib[i] for i in range(L))
+    out = []
+    for data, digest in zip(records, digests):
+        for shift in range(L):
+            rk = key[shift:] + key[:shift]
+            plain = bytes(b ^ rk[i % L] for i, b in enumerate(data))
+            if hashlib.sha256(plain).hexdigest() == digest:
+                out.append(plain)
+                break
+        else:
+            raise AssertionError("no rotation matched a record digest")
+    return b"".join(out).hex()
 
 if __name__ == "__main__":
     unittest.main()
