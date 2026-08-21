@@ -25,10 +25,12 @@ from autoctf_gan.airesistant import (AIRESISTANT_BUILDERS, gen_honeytrap,
 from autoctf_gan.agentbench import (AGENTBENCH_BUILDERS, gen_chainlink,
                                     gen_falsestart, gen_toolliar)
 from autoctf_gan.bespoke import BESPOKE_BUILDERS, gen_codebook, gen_cpatrace
+from autoctf_gan.picostyle import (PICOSTYLE_BUILDERS, gen_mbakeygen,
+                                   gen_nestpeel)
 from autoctf_gan.verify import verify_spec
 
 ALL_BUILDERS = (ADVERSARIAL_BUILDERS + AIRESISTANT_BUILDERS + BESPOKE_BUILDERS
-                + AGENTBENCH_BUILDERS)
+                + AGENTBENCH_BUILDERS + PICOSTYLE_BUILDERS)
 
 # Words that would hand over the technique. Each rung's difficulty is that a
 # player has to arrive at one of these on their own.
@@ -39,7 +41,8 @@ _GIVEAWAYS = ("knapsack", "gradient", "descent", "off-by-one", "off by one",
               "hamming", "side channel", "side-channel", "shamir", "lagrange",
               "factorial", "permutation", "lehmer", "interpolat", "tampered",
               "polyglot", "planted", "wrong key", "meet in the middle",
-              "baby step", "unproductive")
+              "baby step", "unproductive", "affine", "gf(2)", "xor in disguise",
+              "gaussian", "boolean-arithmetic")
 
 
 class RungsAreSolvable(unittest.TestCase):
@@ -95,6 +98,8 @@ class TheAnswerIsNotInTheArtifacts(unittest.TestCase):
             (gen_falsestart, _falsestart_key),
             (gen_toolliar, _toolliar_key),
             (gen_chainlink, _chainlink_key),
+            (gen_nestpeel, _nestpeel_key),
+            (gen_mbakeygen, _mbakeygen_key),
         ]
         for builder, extract in cases:
             spec = builder(seed=404, generation=0, flag_secret="secret-404")
@@ -415,6 +420,68 @@ def _chainlink_key(spec):
             return "%x" % (i * m + table[cur])
         cur = cur * factor % p
     raise AssertionError("no discrete log found")
+
+
+def _nestpeel_key(spec):
+    import base64
+    import binascii
+    import json
+    import zlib
+    from autoctf_gan.picostyle import NEST_MARKER as MARK
+    manifest = json.loads(spec.artifacts["manifest.json"])
+    blob = bytes.fromhex("".join(spec.artifacts["wrapped.hex"].split()))
+    for layer in manifest["layers"]:
+        codec = layer["codec"]
+        if codec == "hex":
+            blob = binascii.unhexlify(blob)
+        elif codec == "base64":
+            blob = base64.b64decode(blob)
+        elif codec == "base85":
+            blob = base64.b85decode(blob)
+        elif codec == "zlib":
+            blob = zlib.decompress(blob)
+        elif codec == "reverse":
+            blob = blob[::-1]
+        elif codec == "rot":
+            amt = (blob[0] - MARK[0]) % 256
+            blob = bytes((b - amt) % 256 for b in blob)
+        elif codec == "xorb":
+            const = blob[0] ^ MARK[0]
+            blob = bytes(b ^ const for b in blob)
+        elif codec == "keystream":
+            klen = layer["key_len"]
+            key = bytes(blob[i] ^ MARK[i] for i in range(klen))
+            blob = bytes(b ^ key[i % klen] for i, b in enumerate(blob))
+        assert blob.startswith(MARK)
+        blob = blob[len(MARK):]
+    return blob.hex()
+
+
+def _mbakeygen_key(spec):
+    import json
+    from autoctf_gan.picostyle import MBA_BITS, _mba_scramble
+    doc = json.loads(spec.artifacts["rounds.json"])
+    rounds = [tuple(r) for r in doc["rounds"]]
+    target = int(doc["target"])
+    c = _mba_scramble(0, rounds)
+    cols = [_mba_scramble(1 << i, rounds) ^ c for i in range(MBA_BITS)]
+    b = target ^ c
+    rows = [[sum(((cols[i] >> j) & 1) << i for i in range(MBA_BITS)), (b >> j) & 1]
+            for j in range(MBA_BITS)]
+    pr, pc = 0, {}
+    for col in range(MBA_BITS):
+        sel = next((r for r in range(pr, MBA_BITS) if (rows[r][0] >> col) & 1), None)
+        if sel is None:
+            continue
+        rows[pr], rows[sel] = rows[sel], rows[pr]
+        for r in range(MBA_BITS):
+            if r != pr and (rows[r][0] >> col) & 1:
+                rows[r][0] ^= rows[pr][0]
+                rows[r][1] ^= rows[pr][1]
+        pc[col] = pr
+        pr += 1
+    key_int = sum((1 << col) for col, r in pc.items() if rows[r][1])
+    return key_int.to_bytes(MBA_BITS // 8, "big").hex()
 
 if __name__ == "__main__":
     unittest.main()
