@@ -26,6 +26,8 @@ from autoctf_gan.agentbench import (AGENTBENCH_BUILDERS, gen_chainlink,
                                     gen_falsestart, gen_toolliar)
 from autoctf_gan.bespoke import BESPOKE_BUILDERS, gen_codebook, gen_cpatrace
 from autoctf_gan.composite import COMPOSITE_BUILDERS, gen_cascade, gen_triad
+from autoctf_gan.harder import (HARDER_BUILDERS, gen_crosskey, gen_filtergen,
+                                gen_hmacpollute)
 from autoctf_gan.hardtier import (HARDTIER_BUILDERS, gen_mqlin, gen_phsmooth,
                                   gen_rswelch)
 from autoctf_gan.humanhard import (HUMANHARD_BUILDERS, gen_blackbox,
@@ -42,7 +44,8 @@ from autoctf_gan.walls import WALLS_BUILDERS, gen_ecdlpwall, gen_rsawall
 ALL_BUILDERS = (ADVERSARIAL_BUILDERS + AIRESISTANT_BUILDERS + BESPOKE_BUILDERS
                 + AGENTBENCH_BUILDERS + PICOSTYLE_BUILDERS + MOREPICO_BUILDERS
                 + HUMANHARD_BUILDERS + HARDTIER_BUILDERS + COMPOSITE_BUILDERS
-                + REALVULN_BUILDERS + SIGNALS_BUILDERS + WALLS_BUILDERS)
+                + REALVULN_BUILDERS + SIGNALS_BUILDERS + HARDER_BUILDERS
+                + WALLS_BUILDERS)
 
 # Words that would hand over the technique. Each rung's difficulty is that a
 # player has to arrive at one of these on their own.
@@ -61,7 +64,7 @@ _GIVEAWAYS = ("knapsack", "gradient", "descent", "off-by-one", "off by one",
               "error locator", "error-locator", "pohlig", "monomial",
               "linearise", "linearize", "reused", "cancel the blind", "subtract",
               "length extension", "length-extension", "malleable", "bit-flip",
-              "hashpump")
+              "hashpump", "berlekamp", "massey", "last write", "last-value")
 
 
 class RungsAreSolvable(unittest.TestCase):
@@ -131,6 +134,7 @@ class TheAnswerIsNotInTheArtifacts(unittest.TestCase):
             (gen_cascade, _cascade_key),
             (gen_lenext, _lenext_key),
             (gen_cbcflip, _cbcflip_key),
+            (gen_hmacpollute, _hmacpollute_key),
         ]
         for builder, extract in cases:
             spec = builder(seed=404, generation=0, flag_secret="secret-404")
@@ -880,6 +884,23 @@ def _cbcflip_key(spec):
     fb = blocks[:]
     fb[rb - 1] = prev
     return (iv + b"".join(fb)).hex()
+
+
+def _hmacpollute_key(spec):
+    import json
+    ns = {}
+    exec(spec.artifacts["authhash.py"], ns)
+    doc = json.loads(spec.artifacts["token.json"])
+    msg = doc["message"].encode()
+    mac = int(doc["mac"], 16)
+    slen = doc["secret_len"]
+    ext = b"&role=admin"
+    glue = ns["pad"](slen + len(msg))
+    data = ext + ns["pad"](slen + len(msg) + len(glue) + len(ext))
+    st = mac
+    for i in range(0, len(data), ns["B"]):
+        st = ns["compress"](st, data[i:i + ns["B"]])
+    return f"{st:016x}"
 
 if __name__ == "__main__":
     unittest.main()
