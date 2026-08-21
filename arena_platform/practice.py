@@ -120,6 +120,19 @@ def practice_specs(secret: str, cache_dir=None):
             specs.append(builder(seed=PRACTICE_SEED, generation=0, flag_secret=secret))
         except Exception as exc:
             print(f"[practice] skipped {builder.__name__}: {type(exc).__name__}: {exc}")
+    # Two tiers aimed at a solver that arrives with a toolkit and a library of
+    # writeups. `adversarial` makes a classifier the target, so the attack is on a
+    # model rather than on a cipher; `airesistant` is shaped so that recognition,
+    # library reuse, and the first plausible lead each point the wrong way.
+    # `gradgate` rehearses its own descent at build time, which is most of the
+    # extra ~10s a catalogue rebuild now costs.
+    from autoctf_gan.adversarial import ADVERSARIAL_BUILDERS
+    from autoctf_gan.airesistant import AIRESISTANT_BUILDERS
+    for builder in ADVERSARIAL_BUILDERS + AIRESISTANT_BUILDERS:
+        try:
+            specs.append(builder(seed=PRACTICE_SEED, generation=0, flag_secret=secret))
+        except Exception as exc:
+            print(f"[practice] skipped {builder.__name__}: {type(exc).__name__}: {exc}")
     return [_strip_hints(s) for s in specs]
 
 
@@ -127,7 +140,7 @@ def practice_specs(secret: str, cache_dir=None):
 # generator altered). A boot whose stored version already matches skips the whole
 # rebuild — otherwise every restart pays ~15s to re-derive 20 specs (safe primes,
 # deep RSA chains) only to dedup them away. A version bump forces one rebuild.
-CATALOGUE_VERSION = 5
+CATALOGUE_VERSION = 6
 
 
 def seed_practice(store) -> int:
