@@ -23,7 +23,9 @@
   <div class="panel" id="board" style="margin-top:18px">Loading…</div>
 </div>
 
+<script src="/static/arena.js"></script>
 <script>
+mountNav('/live');
 const $ = s => document.querySelector(s);
 function tok(){ return localStorage.getItem("arena_token") || ""; }
 function saveToken(){ localStorage.setItem("arena_token", $("#token").value.trim()); load(); }
