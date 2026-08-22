@@ -26,7 +26,8 @@ from autoctf_gan.agentbench import (AGENTBENCH_BUILDERS, gen_chainlink,
                                     gen_falsestart, gen_toolliar)
 from autoctf_gan.bespoke import BESPOKE_BUILDERS, gen_codebook, gen_cpatrace
 from autoctf_gan.composite import COMPOSITE_BUILDERS, gen_cascade, gen_triad
-from autoctf_gan.estranged import (ESTRANGED_BUILDERS, gen_mirage, gen_sandtrap,
+from autoctf_gan.estranged import (ESTRANGED_BUILDERS, gen_endiantrap,
+                                   gen_graytrap, gen_mirage, gen_sandtrap,
                                    gen_statewalk)
 from autoctf_gan.evalhard import EVALHARD_BUILDERS, gen_cgmdecode, gen_fwscope
 from autoctf_gan.harder import (HARDER_BUILDERS, gen_crosskey, gen_filtergen,
@@ -144,6 +145,8 @@ class TheAnswerIsNotInTheArtifacts(unittest.TestCase):
             (gen_mirage, _mirage_key),
             (gen_sandtrap, _sandtrap_key),
             (gen_statewalk, _statewalk_key),
+            (gen_endiantrap, _endiantrap_key),
+            (gen_graytrap, _graytrap_key),
         ]
         for builder, extract in cases:
             spec = builder(seed=404, generation=0, flag_secret="secret-404")
@@ -978,6 +981,24 @@ def _statewalk_key(spec):
     from autoctf_gan.estranged import _state_run
     prog = [tuple(p) for p in json.loads(spec.artifacts["program.json"])["program"]]
     return _state_run(prog, modal=True).hex()
+
+
+def _endiantrap_key(spec):
+    blob = bytes.fromhex(spec.artifacts["blob.hex"].strip())
+    key = bytearray()
+    for i in range(0, len(blob), 4):
+        c0, c1, c2, c3 = blob[i], blob[i + 1], blob[i + 2], blob[i + 3]
+        key += bytes([c1, c0, c3, c2])
+    return bytes(key).hex()
+
+
+def _graytrap_key(spec):
+    g = int.from_bytes(bytes.fromhex(spec.artifacts["word.hex"].strip()), "big")
+    v, shift = g, 1
+    while shift < 128:
+        v ^= v >> shift
+        shift <<= 1
+    return (v & ((1 << 128) - 1)).to_bytes(16, "big").hex()
 
 
 if __name__ == "__main__":

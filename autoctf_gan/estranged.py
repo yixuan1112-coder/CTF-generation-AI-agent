@@ -439,4 +439,178 @@ def gen_statewalk(seed, generation, **kw):
         rank=14, max_runtime_s=60, flag_secret=flag_secret)
 
 
-ESTRANGED_BUILDERS = [gen_mirage, gen_sandtrap, gen_statewalk]
+
+
+# ---------------------------------------------------------------------------
+# endiantrap — a middle-endian packing that reads as ordinary little-endian
+# ---------------------------------------------------------------------------
+_ENDIAN_SPEC = '''\
+SLK-3 KEY BLOB — byte order (vendor sheet)
+==========================================
+
+The key is four 32-bit words, W0..W3, stored back to back. Each word is NOT stored
+as a plain 32-bit little- or big-endian integer. It is stored HALF-SWAPPED: the
+word's two 16-bit halves are written high-half FIRST, then low-half, and within
+each 16-bit half the two bytes are written low byte first.
+
+So a word whose big-endian bytes are (b0, b1, b2, b3) — b0 most significant —
+is written to the blob as (b1, b0, b3, b2).
+
+Read the blob back into the four words to recover the key; the word bytes in
+big-endian order, concatenated W0..W3, are the 16-byte key.
+'''
+
+_ENDIAN_SOLVER = '''\
+"""Unpack a half-swapped (middle-endian) key blob. Plain endianness is the trap.
+
+`spec.txt` says each 32-bit word is stored half-swapped: big-endian word bytes
+(b0,b1,b2,b3) are written (b1,b0,b3,b2). Reading each 4-byte group as an ordinary
+little-endian integer — the reflex — gives a key that opens `recovery.enc` into a
+clean flag, and it is wrong. Undo the exact swap instead: for each group
+(c0,c1,c2,c3) the true word bytes are (c1,c0,c3,c2).
+"""
+blob = bytes.fromhex(open("blob.hex", encoding="utf-8").read().strip())
+key = bytearray()
+for i in range(0, len(blob), 4):
+    c0, c1, c2, c3 = blob[i], blob[i + 1], blob[i + 2], blob[i + 3]
+    key += bytes([c1, c0, c3, c2])
+
+import sealed
+print(sealed.unseal(open("flag.enc", encoding="utf-8").read(), bytes(key).hex()))
+'''
+
+
+def gen_endiantrap(seed, generation, **kw):
+    flag_secret = kw.get("flag_secret", "")
+    flag = challenge_flag(kind="endiantrap", seed=seed, generation=generation,
+                          secret=flag_secret)
+    decoy = _decoy_flag("endiantrap", seed, generation, flag_secret)
+    rng = random.Random(f"endiantrap:{flag_secret}:{seed}:{generation}")
+
+    key = bytes(rng.randrange(256) for _ in range(16))
+    blob = bytearray()
+    for i in range(0, 16, 4):
+        b0, b1, b2, b3 = key[i], key[i + 1], key[i + 2], key[i + 3]
+        blob += bytes([b1, b0, b3, b2])                 # half-swapped store
+    # The reflexive misread: each group as a plain little-endian uint32.
+    naive = bytearray()
+    for i in range(0, 16, 4):
+        naive += int.from_bytes(blob[i:i + 4], "little").to_bytes(4, "big")
+
+    artifacts = {
+        "blob.hex": bytes(blob).hex() + "\n",
+        "spec.txt": _ENDIAN_SPEC,
+        "sealed.py": _SEAL_TOOL,
+        "flag.enc": _seal(key.hex(), flag),
+        "recovery.enc": _seal(bytes(naive).hex(), decoy),
+        "README.md": (
+            "# Key blob\n\n"
+            "`blob.hex` is a 16-byte key blob and `spec.txt` is the vendor's byte-order "
+            "sheet for it. Recover the key.\n\n"
+            "The operator kept two sealed blobs, `flag.enc` and `recovery.enc`; the "
+            "recovery blob opens under the key as lowercase hex. `sealed.py` opens a "
+            "blob.\n"),
+    }
+    return _spec(
+        slug=_slug("endiantrap", flag_secret, seed, generation),
+        title="Key Blob", category="reverse",
+        challenge_type="middle-endian-decoy",
+        story=("A 16-byte key blob was recovered with the vendor's byte-order sheet and "
+               "two sealed blobs. Reading the blob back into the key is the task."),
+        vulnerability=("the words are stored half-swapped (middle-endian); a plain "
+                       "little-endian read yields a wrong key that opens a decoy"),
+        solution=["read spec.txt exactly: words are stored half-swapped, not plain LE",
+                  "a reflexive little-endian read produces the decoy key",
+                  "undo the swap: (c0,c1,c2,c3) -> word bytes (c1,c0,c3,c2)",
+                  "concatenate the words big-endian and open flag.enc"],
+        artifacts=artifacts,
+        solver_files={"solver.py": _ENDIAN_SOLVER, "sealed.py": _SEAL_TOOL},
+        flag=flag, seed=seed, generation=generation, attack_class="endiantrap",
+        rank=13, max_runtime_s=60, flag_secret=flag_secret)
+
+
+# ---------------------------------------------------------------------------
+# graytrap — reflected Gray code that reads as plain binary
+# ---------------------------------------------------------------------------
+_GRAY_SPEC = '''\
+SLK-4 SENSOR WORD — encoding note
+=================================
+
+The 128-bit sensor word is transmitted as a REFLECTED binary code (each transmitted
+bit is the XOR of two adjacent bits of the true value), the way an absolute encoder
+reports position so that only one bit changes between adjacent readings.
+
+To recover the true 128-bit value from the transmitted code g, take the running
+prefix-XOR: bit i of the value is the XOR of bits i, i-1, ..., 0 of the value, i.e.
+v = g XOR (g >> 1) XOR (g >> 2) XOR ... . The 16 big-endian bytes of v are the key.
+'''
+
+_GRAY_SOLVER = '''\
+"""Decode a reflected-binary (Gray) sensor word. Reading it as plain binary is the trap.
+
+`spec.txt` says the 128-bit word is a reflected binary code, not the value itself.
+Taking the transmitted bytes as the key directly — the reflex — opens
+`recovery.enc` into a clean flag, and it is wrong. Convert Gray to binary: fold the
+value with successive right-shifted XORs until the shift covers all 128 bits.
+"""
+g = int.from_bytes(bytes.fromhex(open("word.hex", encoding="utf-8").read().strip()), "big")
+v = g
+shift = 1
+while shift < 128:
+    v ^= v >> shift
+    shift <<= 1
+v &= (1 << 128) - 1
+key = v.to_bytes(16, "big")
+
+import sealed
+print(sealed.unseal(open("flag.enc", encoding="utf-8").read(), key.hex()))
+'''
+
+
+def gen_graytrap(seed, generation, **kw):
+    flag_secret = kw.get("flag_secret", "")
+    flag = challenge_flag(kind="graytrap", seed=seed, generation=generation,
+                          secret=flag_secret)
+    decoy = _decoy_flag("graytrap", seed, generation, flag_secret)
+    rng = random.Random(f"graytrap:{flag_secret}:{seed}:{generation}")
+
+    key = bytes(rng.randrange(256) for _ in range(16))
+    v = int.from_bytes(key, "big")
+    g = v ^ (v >> 1)                                    # binary -> reflected Gray
+    word = g.to_bytes(16, "big")
+    naive = word                                        # the reflex: read code as value
+
+    artifacts = {
+        "word.hex": word.hex() + "\n",
+        "spec.txt": _GRAY_SPEC,
+        "sealed.py": _SEAL_TOOL,
+        "flag.enc": _seal(key.hex(), flag),
+        "recovery.enc": _seal(naive.hex(), decoy),
+        "README.md": (
+            "# Sensor word\n\n"
+            "`word.hex` is a 128-bit sensor word and `spec.txt` is its encoding note. "
+            "Recover the true value; its 16 big-endian bytes are the key.\n\n"
+            "The operator kept two sealed blobs, `flag.enc` and `recovery.enc`; the "
+            "recovery blob opens under the key as lowercase hex. `sealed.py` opens a "
+            "blob.\n"),
+    }
+    return _spec(
+        slug=_slug("graytrap", flag_secret, seed, generation),
+        title="Sensor Word", category="reverse",
+        challenge_type="gray-code-decoy",
+        story=("A 128-bit sensor word was captured with its encoding note and two sealed "
+               "blobs. Recovering the true value it encodes is the task."),
+        vulnerability=("the word is a reflected binary (Gray) code, so reading it as plain "
+                       "binary yields a wrong value that opens a decoy"),
+        solution=["read spec.txt: the word is a reflected binary code, not the value",
+                  "reading the transmitted bytes as the value opens the decoy",
+                  "convert Gray to binary with successive right-shifted XORs",
+                  "the 16 big-endian bytes of the value open flag.enc"],
+        artifacts=artifacts,
+        solver_files={"solver.py": _GRAY_SOLVER, "sealed.py": _SEAL_TOOL},
+        flag=flag, seed=seed, generation=generation, attack_class="graytrap",
+        rank=12, max_runtime_s=60, flag_secret=flag_secret)
+
+
+ESTRANGED_BUILDERS = [gen_mirage, gen_sandtrap, gen_statewalk,
+                      gen_endiantrap, gen_graytrap]
