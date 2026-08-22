@@ -79,7 +79,7 @@ class LiveBroker:
         if not self.challenges_dir.is_dir():
             return out
         for d in sorted(self.challenges_dir.iterdir()):
-            if not (d / "Dockerfile").is_file() or not (d / "server.py").is_file():
+            if not d.is_dir() or not (d / "Dockerfile").is_file():
                 continue
             readme = (d / "README.md").read_text(encoding="utf-8") if (d / "README.md").is_file() else ""
             title = readme.splitlines()[0].lstrip("# ").strip() if readme else d.name
