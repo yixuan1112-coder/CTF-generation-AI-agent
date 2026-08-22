@@ -28,11 +28,14 @@
   <div class="panel" id="board" style="margin-top:18px">Loading…</div>
 </div>
 
-<script src="/static/arena.js"></script>
+<script src="/static/arena.js?v=live2"></script>
 <script>
 // The nav must never be able to block the board from loading.
-try { if (typeof mountNav === 'function') mountNav('/live'); } catch (e) { console.error('nav failed', e); }
 const $ = s => document.querySelector(s);
+// Never let an uncaught error leave the board on "Loading..." with no explanation.
+window.addEventListener('error', ev => { const b=$('#board'); if(b && b.innerHTML.indexOf('Loading')>=0) b.innerHTML = "<p class='muted'>Script error: "+(ev.message||'')+"</p>"; });
+window.addEventListener('unhandledrejection', ev => { const b=$('#board'); if(b && b.innerHTML.indexOf('Loading')>=0) b.innerHTML = "<p class='muted'>Request error: "+((ev.reason&&ev.reason.message)||ev.reason||'')+"</p>"; });
+try { if (typeof mountNav === 'function') mountNav('/live'); } catch (e) { console.error('nav failed', e); }
 function tok(){ return localStorage.getItem("arena_token") || ""; }
 function saveToken(){ localStorage.setItem("arena_token", $("#token").value.trim()); load(); }
 function auth(){ return { "Authorization": "Bearer " + tok() }; }
@@ -46,20 +49,21 @@ async function api(path, opts={}){
 
 let CHALS = [], MINE = {}, SOLVED = [];
 
+function showErr(msg){ try { $("#board").innerHTML = "<p class='muted'>Could not load: "+msg+"</p>"; } catch(_){} }
 async function load(){
-  $("#token").value = tok();
-  try {
-    const c = await api("/api/live/challenges");
-    CHALS = c.challenges;
-    if(!c.enabled){ $("#board").innerHTML = "<p class='muted'>Live instances need a Docker backend, which is not enabled on this server.</p>"; return; }
-  } catch(e){ $("#board").innerHTML = "<p class='muted'>"+e.message+"</p>"; return; }
+ try {
+  const tk = $("#token"); if (tk) tk.value = tok();
+  const c = await api("/api/live/challenges");
+  CHALS = c.challenges || [];
+  if(!c.enabled){ $("#board").innerHTML = "<p class='muted'>Live instances need a Docker backend, which is not enabled on this server.</p>"; return; }
   MINE = {}; SOLVED = [];
   if(tok()){
     try { const m = await api("/api/live/instances"); (m.instances||[]).forEach(i=>MINE[i.challenge]=i); SOLVED=m.solved||[];
-          $("#who").textContent = "token active"; }
-    catch(e){ $("#who").textContent = e.message; }
-  } else { $("#who").textContent = "no token — register on /submit, then paste it here"; }
+          const w=$("#who"); if(w) w.textContent = "token active"; }
+    catch(e){ const w=$("#who"); if(w) w.textContent = e.message; }
+  } else { const w=$("#who"); if(w) w.textContent = "no token — register on /submit, then paste it here"; }
   render();
+ } catch(e){ showErr(e && e.message || String(e)); }
 }
 
 function render(){
