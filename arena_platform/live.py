@@ -88,8 +88,9 @@ class LiveBroker:
                 if para.strip():
                     desc = " ".join(para.split())[:400]
                     break
+            conn = "http" if "http" in title.lower() else "tcp"
             out[d.name] = {"name": d.name, "title": title, "desc": desc,
-                           "dir": str(d), "conn": "tcp"}
+                           "dir": str(d), "conn": conn}
         return out
 
     def _docker_ok(self):
@@ -223,8 +224,10 @@ class LiveBroker:
 
     def _public(self, inst: Instance):
         host = self.public_host or "127.0.0.1"
+        conn = self.challenges.get(inst.challenge, {}).get("conn", "tcp")
+        connect = (f"http://{host}:{inst.port}/" if conn == "http"
+                   else f"nc {host} {inst.port}")
         return {"instance_id": inst.id, "challenge": inst.challenge,
-                "host": host, "port": inst.port,
-                "connect": f"nc {host} {inst.port}",
+                "host": host, "port": inst.port, "conn": conn, "connect": connect,
                 "expires_in": max(0, int(inst.expires_at - time.time())),
                 "solved": inst.solved}

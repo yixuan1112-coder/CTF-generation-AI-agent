@@ -61,7 +61,7 @@ function render(){
     let live = "";
     if(inst){
       live = `<div class="row" style="margin-top:8px;gap:8px;flex-wrap:wrap">
-        <code class="pill">nc ${inst.host} ${inst.port}</code>
+        <code class="pill">${inst.connect}</code>
         <span class="muted">expires in ${Math.floor(inst.expires_in/60)}m ${inst.expires_in%60}s</span>
         <input class="inp" id="flag-${c.name}" placeholder="flag{...}" style="min-width:240px"/>
         <button class="btn" onclick="submit('${c.name}','${inst.instance_id}')">Submit flag</button>
