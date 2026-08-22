@@ -78,6 +78,7 @@ class Arena:
         self.engine = MatchEngine(self.store, self.upload_root, workers=workers,
                                   backend=backend, maker_backend=maker_backend)
         self._seed_practice()
+        self.live = self._init_live()
         self.limit_teams = RateLimiter(limit=10, window_s=3600)
         self.limit_matches = RateLimiter(limit=30, window_s=3600)
         # Tighter than the others on purpose: every image submission costs a
@@ -98,6 +99,20 @@ class Arena:
             # at startup, rather than at the first evolution of the first match.
             raise RuntimeError(f"challenge-maker unavailable: {exc}") from exc
         return report
+
+    def _init_live(self):
+        """Stand up the live-instance broker. Best-effort: a host without Docker
+        (or without the live_challenges dir) simply serves an empty live board."""
+        try:
+            from .live import LiveBroker
+            chals = Path(__file__).resolve().parent.parent / "live_challenges"
+            broker = LiveBroker(self.data_dir, chals)
+            print(f"[arena] live challenges: {len(broker.challenges)} discovered, "
+                  f"docker={'yes' if broker._enabled else 'no'}")
+            return broker
+        except Exception as exc:                      # noqa: BLE001 — never fatal
+            print(f"[arena] live broker unavailable: {type(exc).__name__}: {exc}")
+            return None
 
     def _seed_practice(self) -> None:
         """Populate the curated practice catalogue once, so a player always has
@@ -400,7 +415,8 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- pages -------------------------------------------------------------
     PAGES = {"/": "index.html", "/submit": "submit.html", "/docs": "docs.html",
-             "/library": "library.html", "/practice": "library.html"}
+             "/library": "library.html", "/practice": "library.html",
+             "/live": "live.html"}
 
     def _serve_page(self, path: str) -> bool:
         if path in self.PAGES:
@@ -568,6 +584,37 @@ class Handler(BaseHTTPRequestHandler):
             solved = store.practice_solves_for_team(team["id"])
             return self._json({"team": team["name"], "solved": solved,
                                "count": len(solved)})
+
+        if path.startswith("/api/live"):
+            live = getattr(arena, "live", None)
+            if live is None:
+                raise ApiError("live challenges are not enabled on this server", 503)
+            from .live import LiveError
+            try:
+                if path == "/api/live/challenges" and method == "GET":
+                    return self._json({"challenges": live.list_challenges(),
+                                       "enabled": live._enabled})
+                if path == "/api/live/instances" and method == "GET":
+                    team = arena.auth(self._token(qs))
+                    return self._json({"instances": live.instances_for(team["id"]),
+                                       "solved": live.solved_by(team["id"])})
+                if path == "/api/live/launch" and method == "POST":
+                    team = arena.auth(self._token(qs))
+                    name = str(self._json_body().get("challenge", ""))
+                    return self._json(live.launch(team["id"], name), 201)
+                if path == "/api/live/stop" and method == "POST":
+                    team = arena.auth(self._token(qs))
+                    iid = str(self._json_body().get("instance_id", ""))
+                    return self._json(live.stop(team["id"], iid))
+                if path == "/api/live/submit" and method == "POST":
+                    team = arena.auth(self._token(qs))
+                    body = self._json_body()
+                    return self._json(live.submit(team["id"],
+                                                  str(body.get("instance_id", "")),
+                                                  str(body.get("flag", ""))[:512]))
+            except LiveError as exc:
+                raise ApiError(str(exc), 400)
+            raise ApiError("unknown live sub-resource", 404)
 
         if path == "/api/practice/scoreboard" and method == "GET":
             limit = min(200, int(qs.get("limit", ["100"])[0] or 100))
