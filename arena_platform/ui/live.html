@@ -1,7 +1,12 @@
 <!doctype html>
+<html lang="en">
+<head>
 <meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>AutoCTF Arena — Live challenges</title>
 <link rel="stylesheet" href="/static/arena.css"/>
+</head>
+<body>
 <div class="wrap">
   <div class="hero">
     <div class="eyebrow">Attack a running service</div>
@@ -25,7 +30,8 @@
 
 <script src="/static/arena.js"></script>
 <script>
-mountNav('/live');
+// The nav must never be able to block the board from loading.
+try { if (typeof mountNav === 'function') mountNav('/live'); } catch (e) { console.error('nav failed', e); }
 const $ = s => document.querySelector(s);
 function tok(){ return localStorage.getItem("arena_token") || ""; }
 function saveToken(){ localStorage.setItem("arena_token", $("#token").value.trim()); load(); }
@@ -99,3 +105,5 @@ async function submit(name, id){
 load();
 setInterval(()=>{ if(tok()) load(); }, 30000);
 </script>
+</body>
+</html>
