@@ -441,7 +441,12 @@ class Handler(BaseHTTPRequestHandler):
         ctype = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
         if ctype.startswith("text/") or ctype in ("application/javascript",):
             ctype += "; charset=utf-8"
-        self._send(200, ctype, target.read_bytes(), {"Cache-Control": "no-cache"})
+        # HTML pages change often and must never be served from a stale browser
+        # cache; static assets (css/js) are cache-busted by query string instead.
+        cache = ("no-store, no-cache, must-revalidate, max-age=0"
+                 if target.suffix == ".html" else "no-cache")
+        self._send(200, ctype, target.read_bytes(),
+                   {"Cache-Control": cache, "Pragma": "no-cache"})
 
     # ---- API ---------------------------------------------------------------
     def _api(self, method: str, path: str, qs: dict):
