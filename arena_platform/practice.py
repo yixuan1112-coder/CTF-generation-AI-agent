@@ -146,6 +146,7 @@ def practice_specs(secret: str, cache_dir=None):
     # behind a wall that makes the obvious attack infeasible.
     from autoctf_gan.bespoke import BESPOKE_BUILDERS
     from autoctf_gan.composite import COMPOSITE_BUILDERS
+    from autoctf_gan.estranged import ESTRANGED_BUILDERS
     from autoctf_gan.evalhard import EVALHARD_BUILDERS
     from autoctf_gan.harder import HARDER_BUILDERS
     from autoctf_gan.hardtier import HARDTIER_BUILDERS
@@ -166,7 +167,7 @@ def practice_specs(secret: str, cache_dir=None):
                     + AGENTBENCH_BUILDERS + PICOSTYLE_BUILDERS + MOREPICO_BUILDERS
                     + HUMANHARD_BUILDERS + HARDTIER_BUILDERS + COMPOSITE_BUILDERS
                     + REALVULN_BUILDERS + SIGNALS_BUILDERS + HARDER_BUILDERS
-                    + EVALHARD_BUILDERS + WALLS_BUILDERS):
+                    + EVALHARD_BUILDERS + ESTRANGED_BUILDERS + WALLS_BUILDERS):
         try:
             specs.append(builder(seed=PRACTICE_SEED, generation=0, flag_secret=secret))
         except Exception as exc:
@@ -178,7 +179,7 @@ def practice_specs(secret: str, cache_dir=None):
 # generator altered). A boot whose stored version already matches skips the whole
 # rebuild — otherwise every restart pays ~15s to re-derive 20 specs (safe primes,
 # deep RSA chains) only to dedup them away. A version bump forces one rebuild.
-CATALOGUE_VERSION = 18
+CATALOGUE_VERSION = 19
 
 
 def seed_practice(store) -> int:

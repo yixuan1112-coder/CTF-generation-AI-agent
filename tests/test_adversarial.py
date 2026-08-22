@@ -26,6 +26,8 @@ from autoctf_gan.agentbench import (AGENTBENCH_BUILDERS, gen_chainlink,
                                     gen_falsestart, gen_toolliar)
 from autoctf_gan.bespoke import BESPOKE_BUILDERS, gen_codebook, gen_cpatrace
 from autoctf_gan.composite import COMPOSITE_BUILDERS, gen_cascade, gen_triad
+from autoctf_gan.estranged import (ESTRANGED_BUILDERS, gen_mirage, gen_sandtrap,
+                                   gen_statewalk)
 from autoctf_gan.evalhard import EVALHARD_BUILDERS, gen_cgmdecode, gen_fwscope
 from autoctf_gan.harder import (HARDER_BUILDERS, gen_crosskey, gen_filtergen,
                                 gen_hmacpollute)
@@ -46,7 +48,7 @@ ALL_BUILDERS = (ADVERSARIAL_BUILDERS + AIRESISTANT_BUILDERS + BESPOKE_BUILDERS
                 + AGENTBENCH_BUILDERS + PICOSTYLE_BUILDERS + MOREPICO_BUILDERS
                 + HUMANHARD_BUILDERS + HARDTIER_BUILDERS + COMPOSITE_BUILDERS
                 + REALVULN_BUILDERS + SIGNALS_BUILDERS + HARDER_BUILDERS
-                + EVALHARD_BUILDERS + WALLS_BUILDERS)
+                + EVALHARD_BUILDERS + ESTRANGED_BUILDERS + WALLS_BUILDERS)
 
 # Words that would hand over the technique. Each rung's difficulty is that a
 # player has to arrive at one of these on their own.
@@ -139,6 +141,9 @@ class TheAnswerIsNotInTheArtifacts(unittest.TestCase):
             (gen_hmacpollute, _hmacpollute_key),
             (gen_fwscope, _fwscope_key),
             (gen_cgmdecode, _cgmdecode_key),
+            (gen_mirage, _mirage_key),
+            (gen_sandtrap, _sandtrap_key),
+            (gen_statewalk, _statewalk_key),
         ]
         for builder, extract in cases:
             spec = builder(seed=404, generation=0, flag_secret="secret-404")
@@ -945,6 +950,35 @@ def _cgmdecode_key(spec):
         if ok:
             return bytes(msg).rstrip(b"\x00").hex()
     raise AssertionError("no whitening seed checks")
+
+def _mirage_key(spec):
+    import json
+    d = json.loads(spec.artifacts["target.json"])
+    T, A, B, C = d["token"], d["A"], d["B"], d["C"]
+    Ai = pow(A, -1, 256)
+    n = len(T)
+    key = [0] * n
+    key[n - 1] = (Ai * ((T[n - 1] - C[n - 1]) % 256)) % 256
+    for i in range(n - 2, -1, -1):
+        key[i] = (Ai * ((T[i] - B * key[i + 1] - C[i]) % 256)) % 256
+    return bytes(key).hex()
+
+
+def _sandtrap_key(spec):
+    import json
+    from autoctf_gan.estranged import _sand_gmul
+    d = json.loads(spec.artifacts["target.json"])
+    T, a, C = d["token"], d["a"], d["C"]
+    ia = next(b for b in range(1, 256) if _sand_gmul(a, b) == 1)
+    return bytes(_sand_gmul(T[i] ^ C[i], ia) for i in range(len(T))).hex()
+
+
+def _statewalk_key(spec):
+    import json
+    from autoctf_gan.estranged import _state_run
+    prog = [tuple(p) for p in json.loads(spec.artifacts["program.json"])["program"]]
+    return _state_run(prog, modal=True).hex()
+
 
 if __name__ == "__main__":
     unittest.main()
