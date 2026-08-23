@@ -212,5 +212,21 @@ class NewPracticeCategories(unittest.TestCase):
         self.assertTrue({"reverse", "forensics", "web"} <= seen)
 
 
+class RedTeamCategories(unittest.TestCase):
+    """The red-team-flavoured tier — e.g. meet-in-the-middle on double encryption."""
+
+    def test_every_redteam_challenge_solves_and_hides_the_flag(self):
+        from autoctf_gan.redteam import REDTEAM_BUILDERS
+        from autoctf_gan.verify import verify_spec
+        for builder in REDTEAM_BUILDERS:
+            for seed in (1234, 4242):
+                spec = builder(seed=seed, generation=0, flag_secret=f"rt{seed}")
+                self.assertEqual(spec.hints, [])
+                for content in spec.artifacts.values():
+                    self.assertNotIn(spec.flag, content)
+                self.assertTrue(verify_spec(spec).valid,
+                                f"{spec.challenge_type} did not solve at seed {seed}")
+
+
 if __name__ == "__main__":
     unittest.main()

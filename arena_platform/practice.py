@@ -116,7 +116,8 @@ def practice_specs(secret: str, cache_dir=None):
     # agent/service track, not in a static download.)
     from autoctf_gan.variety import ALL_VARIETY
     from autoctf_gan.newpractice import NEWPRACTICE_BUILDERS
-    for builder in ALL_VARIETY + NEWPRACTICE_BUILDERS:
+    from autoctf_gan.redteam import REDTEAM_BUILDERS
+    for builder in ALL_VARIETY + NEWPRACTICE_BUILDERS + REDTEAM_BUILDERS:
         try:
             specs.append(builder(seed=PRACTICE_SEED, generation=0, flag_secret=secret))
         except Exception as exc:
@@ -180,7 +181,7 @@ def practice_specs(secret: str, cache_dir=None):
 # generator altered). A boot whose stored version already matches skips the whole
 # rebuild — otherwise every restart pays ~15s to re-derive 20 specs (safe primes,
 # deep RSA chains) only to dedup them away. A version bump forces one rebuild.
-CATALOGUE_VERSION = 21
+CATALOGUE_VERSION = 22
 
 
 def seed_practice(store) -> int:
