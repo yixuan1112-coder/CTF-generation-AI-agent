@@ -1,0 +1,8 @@
+{
+  "conn": "http",
+  "entry":    {"name": "web01", "dir": "web01", "port": 9000},
+  "internal": [
+    {"name": "metadata", "dir": "metadata", "port": 9000},
+    {"name": "vault",    "dir": "vault",    "port": 9000, "flag": true}
+  ]
+}

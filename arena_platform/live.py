@@ -32,6 +32,14 @@ PORT_RANGE = range(20000, 20050)
 DEFAULT_TTL_S = 1800
 MAX_INSTANCES = 24
 NAME_PREFIX = "live-"
+NET_PREFIX = "live-net-"
+
+# Shared container hardening, applied to single- and multi-container instances
+# alike: non-root capabilities dropped, read-only rootfs with a small writable
+# /tmp, and memory/PID/CPU caps.
+HARDEN = ["--memory", "128m", "--memory-swap", "128m", "--pids-limit", "128",
+          "--cpus", "0.5", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+          "--read-only", "--tmpfs", "/tmp:rw,noexec,nosuid,size=8m"]
 
 
 class LiveError(RuntimeError):
@@ -55,6 +63,10 @@ class Instance:
     container: str
     expires_at: float
     solved: bool = False
+    # Multi-container instances track their whole container group and the private
+    # network they share; single-container instances leave these empty.
+    containers: list = field(default_factory=list)
+    network: str = ""
 
 
 class LiveBroker:
@@ -79,7 +91,11 @@ class LiveBroker:
         if not self.challenges_dir.is_dir():
             return out
         for d in sorted(self.challenges_dir.iterdir()):
-            if not d.is_dir() or not (d / "Dockerfile").is_file():
+            if not d.is_dir():
+                continue
+            topo_path = d / "topology.json"
+            is_multi = topo_path.is_file()
+            if not is_multi and not (d / "Dockerfile").is_file():
                 continue
             readme = (d / "README.md").read_text(encoding="utf-8") if (d / "README.md").is_file() else ""
             title = readme.splitlines()[0].lstrip("# ").strip() if readme else d.name
@@ -88,9 +104,16 @@ class LiveBroker:
                 if para.strip():
                     desc = " ".join(para.split())[:400]
                     break
-            conn = "http" if "http" in title.lower() else "tcp"
-            out[d.name] = {"name": d.name, "title": title, "desc": desc,
-                           "dir": str(d), "conn": conn}
+            entry = {"name": d.name, "title": title, "desc": desc, "dir": str(d)}
+            if is_multi:
+                topo = json.loads(topo_path.read_text(encoding="utf-8"))
+                entry["multi"] = True
+                entry["topology"] = topo
+                entry["conn"] = topo.get("conn") or ("http" if "http" in title.lower() else "tcp")
+            else:
+                entry["multi"] = False
+                entry["conn"] = "http" if "http" in title.lower() else "tcp"
+            out[d.name] = entry
         return out
 
     def _docker_ok(self):
@@ -120,6 +143,10 @@ class LiveBroker:
             ids = [x for x in proc.stdout.split() if x]
             if ids:
                 _docker("kill", *ids, check=False, timeout=60)
+            # remove any leftover private networks from a previous run
+            nets = _docker("network", "ls", "-q", "--filter", f"name={NET_PREFIX}", check=False)
+            for net in [x for x in nets.stdout.split() if x]:
+                _docker("network", "rm", net, check=False, timeout=30)
         except Exception:
             pass
 
@@ -133,7 +160,10 @@ class LiveBroker:
                 self._kill(inst)
 
     def _kill(self, inst: Instance):
-        _docker("kill", inst.container, check=False, timeout=30)
+        for container in (inst.containers or [inst.container]):
+            _docker("kill", container, check=False, timeout=30)
+        if inst.network:
+            _docker("network", "rm", inst.network, check=False, timeout=30)
         with self._lock:
             self._instances.pop(inst.id, None)
 
@@ -145,10 +175,15 @@ class LiveBroker:
         raise LiveError("no free instance port; the board is at capacity")
 
     def _image_for(self, challenge):
-        tag = f"live-{challenge}:latest"
+        return self._build_dir_image(self.challenges[challenge]["dir"], f"live-{challenge}:latest")
+
+    def _build_dir_image(self, path, tag):
+        """Build `path`'s Dockerfile into `tag`, cached: if the tag already exists
+        it is reused (the arena service runs read-only, so images are pre-built on
+        the host and this just finds them)."""
         proc = _docker("images", "-q", tag, check=False)
         if not proc.stdout.strip():
-            _docker("build", "-q", "-t", tag, self.challenges[challenge]["dir"], timeout=300)
+            _docker("build", "-q", "-t", tag, str(path), timeout=300)
         return tag
 
     # -- public API ---------------------------------------------------------
@@ -161,6 +196,8 @@ class LiveBroker:
             raise LiveError("live instances need a Docker backend, which is not available here")
         if challenge not in self.challenges:
             raise LiveError("unknown live challenge")
+        if self.challenges[challenge].get("multi"):
+            return self._launch_multi(team_id, challenge)
         with self._lock:
             # one instance per team per challenge: replace an existing one
             for inst in [i for i in self._instances.values()
@@ -184,6 +221,58 @@ class LiveBroker:
         inst = Instance(id=cid, team_id=team_id, challenge=challenge, port=port,
                         flag_sha256=hashlib.sha256(flag.encode()).hexdigest(),
                         container=container, expires_at=time.time() + self.ttl_s)
+        with self._lock:
+            self._instances[cid] = inst
+        return self._public(inst)
+
+    def _launch_multi(self, team_id, challenge):
+        """Stand up a small private network of containers: several internal
+        services plus one published entry. Only the entry gets a host port, so the
+        internal services are reachable ONLY from inside the network — the player
+        must pivot through the entry to touch them. The whole group is one instance
+        (one TTL, one flag, torn down together)."""
+        topo = self.challenges[challenge]["topology"]
+        cdir = Path(self.challenges[challenge]["dir"])
+        entry = topo["entry"]
+        internal = topo.get("internal", [])
+        with self._lock:
+            for inst in [i for i in self._instances.values()
+                         if i.team_id == team_id and i.challenge == challenge]:
+                self._kill(inst)
+            if len(self._instances) >= MAX_INSTANCES:
+                raise LiveError("the live board is at capacity; try again shortly")
+            port = self._free_port()
+        flag = "flag{" + secrets.token_hex(10) + "}"
+        cid = uuid.uuid4().hex[:12]
+        network = f"{NET_PREFIX}{cid}"
+        _docker("network", "create", "--driver", "bridge", network, timeout=30)
+        containers = []
+
+        def run_service(svc, publish):
+            img = self._build_dir_image(cdir / svc["dir"],
+                                        f"live-{challenge}-{svc['name']}:latest")
+            name = f"{NAME_PREFIX}{challenge}-{svc['name']}-{cid}"
+            svc_port = str(svc.get("port", 9000))
+            env = ["-e", f"FLAG={flag}"] if svc.get("flag") else []
+            pub = ["-p", f"0.0.0.0:{port}:{svc_port}"] if publish else []
+            _docker("run", "-d", "--rm", "--name", name,
+                    "--network", network, "--network-alias", svc["name"],
+                    "-e", f"PORT={svc_port}", *env, *pub, *HARDEN, img, timeout=90)
+            containers.append(name)
+
+        try:
+            for svc in internal:                 # internal services first
+                run_service(svc, publish=False)
+            run_service(entry, publish=True)     # then the published entry
+        except Exception:
+            for c in containers:
+                _docker("kill", c, check=False, timeout=30)
+            _docker("network", "rm", network, check=False, timeout=30)
+            raise
+        inst = Instance(id=cid, team_id=team_id, challenge=challenge, port=port,
+                        flag_sha256=hashlib.sha256(flag.encode()).hexdigest(),
+                        container=containers[-1], expires_at=time.time() + self.ttl_s,
+                        containers=containers, network=network)
         with self._lock:
             self._instances[cid] = inst
         return self._public(inst)
