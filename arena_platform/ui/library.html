@@ -49,6 +49,9 @@
 <script>
 let MODE = new URLSearchParams(location.search).get("mode") === "match" ? "match" : "practice";
 const State = { solved: new Set(), total: 0 };
+// Live (Docker per-instance) challenges are folded into the practice board: same
+// team token, same page. These hold their broker state alongside the static set.
+const Live = { challenges: [], mine: {}, solved: [], enabled: false };
 
 const DIFFICULTY = (rank) =>
   rank <= 2 ? ["easy", ""] : rank <= 6 ? ["medium", "amber"] : ["hard", "violet"];
@@ -149,9 +152,10 @@ function setMode(mode) {
     $("#mode-eyebrow").textContent = "Solve them yourself";
     $("#mode-title").textContent = "Practice challenges";
     $("#mode-lead").textContent =
-      "A fixed set that stays put — every rung of the crypto ladder plus a few composed " +
-      "challenges. Register a team, download the files, solve it by hand or with your own AI " +
-      "agent, then paste the flag. Same challenges for everyone; your solves are tracked.";
+      "A fixed set that stays put — crypto, reverse, forensics, web and more, plus ★ live " +
+      "services you attack over the network (launch your own instance right here). Register a " +
+      "team, download the files or launch an instance, solve it by hand or with your own agent, " +
+      "then paste the flag. Same challenges for everyone; your solves are tracked.";
   } else {
     $("#mode-eyebrow").textContent = "Authored during real matches";
     $("#mode-title").textContent = "Challenges the maker invented";
@@ -175,19 +179,101 @@ async function load() {
     return;
   }
   State.total = data.practice_total || 0;
+  // Live challenges only join the practice board (the match shelf is a highlight reel).
+  if (MODE === "practice") await loadLive(); else Live.challenges = [];
   const n = MODE === "practice" ? data.practice_total : data.match_total;
   $("#count-badge").textContent = MODE === "practice"
-    ? `${n} practice challenge(s)` : `${n} authored`;
+    ? `${n} static + ${Live.challenges.length} live` : `${n} authored`;
   renderPracticeBar();
   const entries = data.entries || [];
-  if (!entries.length) {
+  const liveCards = MODE === "practice" ? Live.challenges.map(renderLive).join("") : "";
+  if (!entries.length && !liveCards) {
     $("#list").innerHTML = MODE === "practice"
       ? `<div class="empty">The practice catalogue is still warming up — check back in a moment.</div>`
       : `<div class="empty">Nothing yet. The maker only authors once an agent has cleared every
          bounded rung — until some agent gets that far, this shelf stays empty.</div>`;
     return;
   }
-  $("#list").innerHTML = entries.map(render).join("");
+  $("#list").innerHTML = liveCards + entries.map(render).join("");
+}
+
+/* ---- live (Docker per-instance) challenges, folded into the board ------- */
+async function loadLive() {
+  Live.mine = {}; Live.solved = [];
+  try {
+    const c = await (await fetch("/api/live/challenges")).json();
+    Live.challenges = c.challenges || [];
+    Live.enabled = !!c.enabled;
+  } catch (e) { Live.challenges = []; Live.enabled = false; return; }
+  if (!Auth.get()) return;
+  try {
+    const m = await api("/api/live/instances");
+    (m.instances || []).forEach((i) => { Live.mine[i.challenge] = i; });
+    Live.solved = m.solved || [];
+  } catch (e) { /* stale token: show the cards, just not my instances */ }
+}
+
+const LIVE_TRACK = (conn) => conn === "http" ? "web" : "pwn / interactive";
+
+function renderLive(c) {
+  const inst = Live.mine[c.name];
+  const solved = Live.solved.includes(c.name);
+  let controls;
+  if (!Live.enabled) {
+    controls = `<p class="sub" style="margin:10px 0 0">This is a live service — it needs the
+      Docker backend, which is offline on this host. It runs on the deployed arena.</p>`;
+  } else if (inst) {
+    const mins = Math.floor(inst.expires_in / 60), secs = inst.expires_in % 60;
+    controls = `
+      <div class="row" style="margin-top:12px;gap:8px;flex-wrap:wrap;align-items:center">
+        <code class="badge violet" style="font-family:monospace">${esc(inst.connect)}</code>
+        <span class="sub">expires in ${mins}m ${secs}s</span>
+        <input id="liveflag-${esc(c.name)}" placeholder="flag{…}" style="max-width:240px"
+               onkeydown="if(event.key==='Enter')submitLive('${esc(c.name)}','${esc(inst.instance_id)}')"/>
+        <button class="btn" onclick="submitLive('${esc(c.name)}','${esc(inst.instance_id)}')">Submit</button>
+        <button class="btn ghost" onclick="stopLive('${esc(inst.instance_id)}')">Stop</button>
+        <span id="liveverdict-${esc(c.name)}" class="sub"></span>
+      </div>`;
+  } else if (!Auth.get()) {
+    controls = `<p class="sub" style="margin:10px 0 0">Register a team ↑ to launch your own instance.</p>`;
+  } else {
+    controls = `<div class="row" style="margin-top:12px">
+      <button class="btn" onclick="launchLive('${esc(c.name)}')">Launch instance</button></div>`;
+  }
+  return `
+  <div class="panel" style="margin:0 0 14px${solved ? ";border-color:rgba(74,222,128,.4)" : ""}">
+    <h2 style="margin-bottom:6px">${esc(c.title)}</h2>
+    <div class="row" style="gap:8px;margin-bottom:10px">
+      ${solved ? `<span class="badge" style="background:rgba(74,222,128,.15);color:#4ade80">✓ solved</span>` : ""}
+      <span class="badge violet">★ live</span>
+      <span class="badge">${esc(LIVE_TRACK(c.conn))}</span>
+      <span class="badge">${esc(c.conn)}</span>
+    </div>
+    <p style="color:var(--dim);margin:0 0 4px">${esc(c.desc)}</p>
+    ${controls}
+  </div>`;
+}
+
+async function launchLive(name) {
+  try { await api("/api/live/launch", { method: "POST", body: { challenge: name } }); load(); }
+  catch (e) { toast(e.message, "bad"); }
+}
+async function stopLive(id) {
+  try { await api("/api/live/stop", { method: "POST", body: { instance_id: id } }); load(); }
+  catch (e) { toast(e.message, "bad"); }
+}
+async function submitLive(name, id) {
+  const verdict = document.getElementById(`liveverdict-${name}`);
+  const flag = (document.getElementById(`liveflag-${name}`).value || "").trim();
+  if (!flag) { verdict.textContent = "enter a flag first"; return; }
+  verdict.textContent = "checking…";
+  try {
+    const r = await api("/api/live/submit", { method: "POST", body: { instance_id: id, flag } });
+    verdict.textContent = r.correct
+      ? (r.first_time ? "✅ correct — first solve!" : "✅ correct") : "❌ not the flag";
+    verdict.style.color = r.correct ? "var(--ok, #4ade80)" : "var(--faint)";
+    if (r.correct) load();
+  } catch (e) { verdict.textContent = `error: ${e.message}`; }
 }
 
 function render(e) {

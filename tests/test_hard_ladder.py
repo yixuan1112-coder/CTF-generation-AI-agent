@@ -191,5 +191,26 @@ class VarietyCategories(unittest.TestCase):
         self.assertTrue({"misc", "web", "forensics", "reverse"} <= seen)
 
 
+class NewPracticeCategories(unittest.TestCase):
+    """The second static wave — GF(2) reverse, USB-HID, pcap reassembly, length-ext."""
+
+    def test_every_new_challenge_solves_and_hides_the_flag(self):
+        from autoctf_gan.newpractice import NEWPRACTICE_BUILDERS
+        from autoctf_gan.verify import verify_spec
+        seen = set()
+        for builder in NEWPRACTICE_BUILDERS:
+            # a spread of seeds, since several builders randomise structure
+            # (matrix rows, segment counts, secret length) per seed
+            for seed in (1234, 77, 20260820):
+                spec = builder(seed=seed, generation=0, flag_secret=f"vsec{seed}")
+                seen.add(spec.category)
+                self.assertEqual(spec.hints, [])
+                for content in spec.artifacts.values():
+                    self.assertNotIn(spec.flag, content)     # never the literal flag
+                self.assertTrue(verify_spec(spec).valid,
+                                f"{spec.category}/{spec.challenge_type} did not solve at seed {seed}")
+        self.assertTrue({"reverse", "forensics", "web"} <= seen)
+
+
 if __name__ == "__main__":
     unittest.main()

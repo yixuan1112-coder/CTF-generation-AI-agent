@@ -115,7 +115,8 @@ def practice_specs(secret: str, cache_dir=None):
     # catalogue is a real CTF, not one discipline. (Interactive pwn/web live on the
     # agent/service track, not in a static download.)
     from autoctf_gan.variety import ALL_VARIETY
-    for builder in ALL_VARIETY:
+    from autoctf_gan.newpractice import NEWPRACTICE_BUILDERS
+    for builder in ALL_VARIETY + NEWPRACTICE_BUILDERS:
         try:
             specs.append(builder(seed=PRACTICE_SEED, generation=0, flag_secret=secret))
         except Exception as exc:
@@ -179,7 +180,7 @@ def practice_specs(secret: str, cache_dir=None):
 # generator altered). A boot whose stored version already matches skips the whole
 # rebuild — otherwise every restart pays ~15s to re-derive 20 specs (safe primes,
 # deep RSA chains) only to dedup them away. A version bump forces one rebuild.
-CATALOGUE_VERSION = 20
+CATALOGUE_VERSION = 21
 
 
 def seed_practice(store) -> int:
